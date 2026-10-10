@@ -1,0 +1,30 @@
+/*
+  my_plugin.c - example for starting the gamepad or joystick plugin
+
+  Copy to the driver's Src/ folder as my_plugin.c and build with -D ADD_MY_PLUGIN=1.
+  grblHAL calls my_plugin_init() once at startup. Select the jogging device in my_machine.h:
+
+    #define GAMEPAD_ENABLE          1   // Bluetooth gamepad via ESP32, see gamepad_plugin.c
+    #define JOYSTICK_ANALOG_ENABLE  0   // analog joystick, see joystick_plugin.c
+
+  If you already have a my_plugin.c, add the calls below to your my_plugin_init().
+*/
+
+#include "driver.h"
+
+#if JOYSTICK_ANALOG_ENABLE && GAMEPAD_ENABLE
+#error "Enable only one of JOYSTICK_ANALOG_ENABLE and GAMEPAD_ENABLE in my_machine.h!"
+#endif
+
+extern void gamepad_init (void);
+extern void joystick_init (void);
+
+void my_plugin_init (void)
+{
+#if GAMEPAD_ENABLE
+    gamepad_init();
+#endif
+#if JOYSTICK_ANALOG_ENABLE
+    joystick_init();
+#endif
+}
