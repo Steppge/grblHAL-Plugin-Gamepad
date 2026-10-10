@@ -1,0 +1,11 @@
+{
+  "name": "gamepad",
+  "description": "grblHAL plugin: jogging with a Bluetooth gamepad (via ESP32) or an analog joystick",
+  "license": "GPL-3.0-or-later",
+  "build": {
+    "srcFilter": [
+      "+<*.c>",
+      "-<esp32/>"
+    ]
+  }
+}
