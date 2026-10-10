@@ -53,6 +53,10 @@
    - step 1 has a fixed slow speed (JOY_FEED_MIN_*) for touching off, steps 2..JOY_STEPS
      rise up to JOY_MAX_RATE_PCT of the axis max rate ($110-$112).
 
+  Changes in v1.0.2:
+   - pull-up of the enable input set through the port number (ioport_digital_in_config()),
+     ioport_get_info() counts in driver order and could hit another pin.
+
   Changes in v1.0:
    - version number of the grblHAL-Plugin-Gamepad release, no functional changes.
 
@@ -78,7 +82,7 @@
 #include "grbl/planner.h"
 #include "grbl/settings.h"
 
-#define JOY_VERSION "1.0"
+#define JOY_VERSION "1.0.2"
 
 // ------------------------------------------------------------------------
 // Configuration - adjust to your sticks
@@ -453,15 +457,11 @@ void joystick_init (void)
 
     // The enable input is read through the grblHAL ioports API (not tied to a MCU). It is not
     // claimed so the port number stays valid for reading, only the description is set for $pins.
-    xbar_t *info = ioport_get_info(Port_Digital, Port_Input, JOY_ENABLE_PORT);
-
-    if(info) {
+    // Note: ioport_get_info() counts in driver order, the functions below use the port number.
+    if(ioport_set_description(Port_Digital, Port_Input, JOY_ENABLE_PORT, "Joystick enable")) {
         // Pull-up so the input idles high when the switch is open, if the driver supports it.
-        if(info->config) {
-            gpio_in_config_t cfg = { .pull_mode = PullMode_Up };
-            info->config(info, &cfg, false);
-        }
-        ioport_set_description(Port_Digital, Port_Input, JOY_ENABLE_PORT, "Joystick enable");
+        gpio_in_config_t cfg = { .pull_mode = PullMode_Up };
+        ioport_digital_in_config(JOY_ENABLE_PORT, &cfg);
         dbg_port = JOY_ENABLE_PORT;
     }
 
