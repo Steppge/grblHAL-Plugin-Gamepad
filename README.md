@@ -113,7 +113,7 @@ Rumble: short click on acknowledges, long on an alarm, two pulses when a job run
 
 ## Status
 
-- `$I` shows `[PLUGIN:Gamepad v0.4 (connected, jog locked)]`, `(no controller)` or `(no ESP32)`.
+- `$I` shows `[PLUGIN:Gamepad v1.0 (connected, jog locked)]`, `(no controller)` or `(no ESP32)`.
 - The status report contains `|Pad:connected,enabled,rx,ly,l2,r2` (disable with `GP_DEBUG 0`).
 
 ## Protocol (UART, 115200 baud, ASCII lines)

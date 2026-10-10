@@ -18,7 +18,7 @@
   You should have received a copy of the GNU General Public License
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-  v0.6 - tested in short bench runs. Keep a hand on the power switch.
+  v1.0 - tested in short bench runs. Keep a hand on the power switch.
 
   Enabled with JOYSTICK_ANALOG_ENABLE in my_machine.h. The stick calibration (joy_cfg[]) is
   the one of the author's sticks, measure yours with JOY_DEBUG (|Joy: in the status report).
@@ -53,6 +53,9 @@
    - step 1 has a fixed slow speed (JOY_FEED_MIN_*) for touching off, steps 2..JOY_STEPS
      rise up to JOY_MAX_RATE_PCT of the axis max rate ($110-$112).
 
+  Changes in v1.0:
+   - version number of the grblHAL-Plugin-Gamepad release, no functional changes.
+
   Changes in v0.6:
    - enable switch read through the grblHAL ioports API instead of the STM32 GPIO registers,
      port numbers configurable (JOYSTICK_ENABLE_PORT, JOYSTICK_PORT_X/Y/Z), not tied to a MCU.
@@ -75,7 +78,7 @@
 #include "grbl/planner.h"
 #include "grbl/settings.h"
 
-#define JOY_VERSION "0.6"
+#define JOY_VERSION "1.0"
 
 // ------------------------------------------------------------------------
 // Configuration - adjust to your sticks

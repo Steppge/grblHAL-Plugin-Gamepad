@@ -18,7 +18,7 @@
   You should have received a copy of the GNU General Public License
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-  v0.4 - jogging, jog enable on Options, buttons, connection watchdog. Keep a hand on the power switch.
+  v1.0 - jogging, jog enable on Options, buttons, connection watchdog. Keep a hand on the power switch.
 
   An ESP32 (see esp32/) connects a PS4 controller (DualShock 4; DualSense and Xbox Series X|S
   work the same way) and sends its state every 20 ms over UART to a serial port of the
@@ -78,7 +78,7 @@
 #include "grbl/settings.h"
 #include "grbl/stream.h"
 
-#define GP_VERSION "0.4"
+#define GP_VERSION "1.0"
 
 // ------------------------------------------------------------------------
 // Configuration
