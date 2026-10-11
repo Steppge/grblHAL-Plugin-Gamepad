@@ -68,16 +68,23 @@ While the ESP32 is connected to the PC over USB leave the 5V wire open.
 | Left stick up/down | Y (10 speed steps) |
 | Right stick left/right | X (10 speed steps) |
 | L2 / R2 (analog) | Z up / Z down (both pressed: Z stops) |
-| Options | Jog enable on/off (light bar red / blue) |
-| Circle | Tap: feed hold. After the hold: hold = STOP (abort the job) |
-| Cross | Tap: resume (cycle start) |
-| Triangle | Hold: home |
-| Square | Hold: X0 Y0 |
-| R1 | Hold: Z0 |
-| PS | Tap: reset after a hard limit alarm, else unlock |
-| Share | Tap: next jog step 0.01 / 0.05 / 0.1 / 1 / 10 mm |
+| Options (`$457`) | Jog enable on/off (light bar red / blue) |
+| Circle (`$450`) | Tap: feed hold. After the hold: hold = STOP (abort the job) |
+| Cross (`$451`) | Tap: resume (cycle start) |
+| Triangle (`$452`) | Hold: home |
+| Square (`$453`) | Hold: X0 Y0 |
+| R1 (`$454`) | Hold: Z0 |
+| PS (`$455`) | Tap: reset after a hard limit alarm, else unlock |
+| Share (`$456`) | Tap: next jog step 0.01 / 0.05 / 0.1 / 1 / 10 mm |
 | D-pad, idle | One jog step X-/X+/Y-/Y+ per press (needs jog enable) |
 | D-pad, job | Up/down: feed override ±10 %, right/left: power/spindle override ±10 % |
+
+The buttons above are the defaults. Settings `$450`-`$457` (group "Gamepad") assign another button to a
+function: 0 none, 1 Cross, 2 Circle, 3 Square, 4 Triangle, 5 L1, 6 R1, 7 L3, 8 R3, 9 PS, 10 Share, 11 Options
+(Xbox: A, B, X, Y, LB, RB, LS, RS, Xbox, View, Menu). A button has one function, assigning it clears its previous
+function. Feed hold / STOP always keeps a button. The ESP32-S3 touch display
+([grblHAL-Plugin-Display](https://github.com/Steppge/grblHAL-Plugin-Display)) has a page for this: Change, then
+press the new button on the controller.
 
 "Hold" = 0.6 s. Every axis has its own control, so a slightly diagonal stick never moves a second axis.
 Step 1 has a fixed slow speed (5 mm/min X/Y, 2 mm/min Z) for touching off, steps 2-10 rise up to 35 % of

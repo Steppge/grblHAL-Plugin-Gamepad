@@ -19,6 +19,7 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
   v1.0 - jogging, jog enable on Options, buttons, connection watchdog. Keep a hand on the power switch.
+  v1.1 - button assignment in settings $450-$457, learn mode for a display.
 
   An ESP32 (see esp32/) connects a PS4 controller (DualShock 4; DualSense and Xbox Series X|S
   work the same way) and sends its state every 20 ms over UART to a serial port of the
@@ -37,19 +38,28 @@
     left stick up/down      Y
     right stick left/right  X
     L2 / R2 (analog)        Z up / Z down (both pressed: Z stops)
-    Options                 jog enable on/off (light bar red / blue)
+    Options                 jog enable on/off (light bar red / blue), see $457
 
-  Buttons ("hold" = GP_HOLD_MS):
+  Functions and their default buttons ("hold" = GP_HOLD_MS):
 
-    Circle      tap: feed hold (job or jog), after the hold has completed: hold = STOP (abort the job)
-    Cross       tap: resume (cycle start) after a hold or tool change
-    Triangle    hold: home ($H)
-    Square      hold: X0 Y0 (G10 L20 P0)
-    R1          hold: Z0
-    PS          tap: reset after a critical alarm (hard limit), else unlock ($X)
-    Share       tap: next jog step 0.01 / 0.05 / 0.1 / 1 / 10 mm (shared with the display Move screen)
-    D-pad       idle: one jog step X-/X+/Y-/Y+ per press, needs jog enable
-                job:  up/down feed override +/-10 %, right/left power (spindle) override +/-10 %
+    $450  Circle    tap: feed hold (job or jog), after the hold has completed: hold = STOP (abort the job)
+    $451  Cross     tap: resume (cycle start) after a hold or tool change
+    $452  Triangle  hold: home ($H)
+    $453  Square    hold: X0 Y0 (G10 L20 P0)
+    $454  R1        hold: Z0
+    $455  PS        tap: reset after a critical alarm (hard limit), else unlock ($X)
+    $456  Share     tap: next jog step 0.01 / 0.05 / 0.1 / 1 / 10 mm (shared with the display Move screen)
+    $457  Options   tap: jog enable on/off
+          D-pad     idle: one jog step X-/X+/Y-/Y+ per press, needs jog enable (fixed)
+                    job:  up/down feed override +/-10 %, right/left power (spindle) override +/-10 %
+
+  The settings take the button: 0 none, 1 Cross, 2 Circle, 3 Square, 4 Triangle, 5 L1, 6 R1, 7 L3,
+  8 R3, 9 PS, 10 Share, 11 Options (Xbox: A, B, X, Y, LB, RB, LS, RS, Xbox, View, Menu). A button has
+  one function: assigning it clears its previous function. Feed hold / STOP always has a button, it
+  cannot be cleared and its button cannot be given to another function.
+
+  Learn mode for a display (gamepad_learn(), gamepad_learned()): the next button pressed is reported
+  instead of acting on it, sticks and buttons do nothing meanwhile (ends after GP_LEARN_MS).
 
   Safety: releasing a stick or trigger stops the axis, no valid packet for GP_TIMEOUT_MS stops
   everything. Jog enable switches off by itself after GP_ENABLE_IDLE_MS without motion, when the
@@ -77,8 +87,9 @@
 #include "grbl/planner.h"
 #include "grbl/settings.h"
 #include "grbl/stream.h"
+#include "grbl/nvs_buffer.h"
 
-#define GP_VERSION "1.0"
+#define GP_VERSION "1.1"
 
 // ------------------------------------------------------------------------
 // Configuration
@@ -106,13 +117,17 @@
 #define GP_HOLD_MS        600       // press time for "hold" buttons
 #define GP_STEP_RATE_PCT  30.0f     // D-pad step jog feed in % of the axis max rate
 #define GP_JOB_MIN_MS    10000      // "job finished" rumble only after jobs running at least this long
+#define GP_LEARN_MS      15000      // learn mode ends after this long without a button
 
 // Bluepad32 button bits (PS4 names)
 #define GP_BTN_CROSS     0x0001     // BUTTON_A
 #define GP_BTN_CIRCLE    0x0002     // BUTTON_B
 #define GP_BTN_SQUARE    0x0004     // BUTTON_X
 #define GP_BTN_TRIANGLE  0x0008     // BUTTON_Y
+#define GP_BTN_L1        0x0010     // BUTTON_SHOULDER_L
 #define GP_BTN_R1        0x0020     // BUTTON_SHOULDER_R
+#define GP_BTN_L3        0x0100     // BUTTON_THUMB_L
+#define GP_BTN_R3        0x0200     // BUTTON_THUMB_R
 #define GP_MISC_PS       0x01       // MISC_BUTTON_SYSTEM
 #define GP_MISC_SHARE    0x02       // MISC_BUTTON_SELECT
 #define GP_MISC_OPTIONS  0x04       // MISC_BUTTON_START (Options)
@@ -455,14 +470,42 @@ static void set_enabled (bool on, sys_state_t state)
 }
 
 // ------------------------------------------------------------------------
-// Buttons
+// Buttons and their functions
 // ------------------------------------------------------------------------
 
+// Buttons, the assignable ones are the setting values (0 = none)
 typedef enum {
-    Btn_Circle = 0, Btn_Cross, Btn_Triangle, Btn_Square, Btn_R1, Btn_PS, Btn_Share,
-    Btn_Up, Btn_Down, Btn_Right, Btn_Left,
-    Btn_Count
-} gp_button_t;
+    Key_None = 0, Key_Cross, Key_Circle, Key_Square, Key_Triangle, Key_L1, Key_R1, Key_L3, Key_R3,
+    Key_PS, Key_Share, Key_Options,
+    Key_Up, Key_Down, Key_Right, Key_Left,      // D-pad, fixed functions
+    Key_Count
+} gp_key_t;
+
+#define KEY_ASSIGNABLE  Key_Up      // buttons below this can be assigned to a function
+#define KEY_NAMES       "None,Cross,Circle,Square,Triangle,L1,R1,L3,R3,PS,Share,Options"
+
+// Functions, setting $450 + function holds the button
+typedef enum {
+    Fn_Hold = 0,        // tap: feed hold, hold once the hold has completed: STOP
+    Fn_Resume,          // tap
+    Fn_Home,            // hold
+    Fn_ZeroXY,          // hold
+    Fn_ZeroZ,           // hold
+    Fn_Unlock,          // tap
+    Fn_Step,            // tap
+    Fn_JogEnable,       // tap
+    Fn_Count
+} gp_function_t;
+
+#define GP_SETTING_FIRST Setting_UserDefined_0
+
+typedef struct {
+    uint8_t key[Fn_Count];
+} gp_settings_t;
+
+static const gp_settings_t gp_defaults = {{ Key_Circle, Key_Cross, Key_Triangle, Key_Square, Key_R1, Key_PS, Key_Share, Key_Options }};
+static gp_settings_t gp_settings = {{ Key_Circle, Key_Cross, Key_Triangle, Key_Square, Key_R1, Key_PS, Key_Share, Key_Options }};
+static nvs_address_t nvs_address;
 
 typedef struct {
     bool down;
@@ -470,24 +513,42 @@ typedef struct {
     uint32_t since;     // ms, press start
 } btn_state_t;
 
-static btn_state_t btn[Btn_Count];
+static btn_state_t btn[Key_Count];
+static bool learning = false;
+static uint32_t learn_start = 0;
+static int8_t learned = -1;
 
-static bool is_down (gp_button_t b)
+static bool is_down (gp_key_t k)
 {
-    switch(b) {
-        case Btn_Circle:   return !!(pad.buttons & GP_BTN_CIRCLE);
-        case Btn_Cross:    return !!(pad.buttons & GP_BTN_CROSS);
-        case Btn_Triangle: return !!(pad.buttons & GP_BTN_TRIANGLE);
-        case Btn_Square:   return !!(pad.buttons & GP_BTN_SQUARE);
-        case Btn_R1:       return !!(pad.buttons & GP_BTN_R1);
-        case Btn_PS:       return !!(pad.misc & GP_MISC_PS);
-        case Btn_Share:    return !!(pad.misc & GP_MISC_SHARE);
-        case Btn_Up:       return !!(pad.dpad & GP_DPAD_UP);
-        case Btn_Down:     return !!(pad.dpad & GP_DPAD_DOWN);
-        case Btn_Right:    return !!(pad.dpad & GP_DPAD_RIGHT);
-        case Btn_Left:     return !!(pad.dpad & GP_DPAD_LEFT);
+    switch(k) {
+        case Key_Cross:    return !!(pad.buttons & GP_BTN_CROSS);
+        case Key_Circle:   return !!(pad.buttons & GP_BTN_CIRCLE);
+        case Key_Square:   return !!(pad.buttons & GP_BTN_SQUARE);
+        case Key_Triangle: return !!(pad.buttons & GP_BTN_TRIANGLE);
+        case Key_L1:       return !!(pad.buttons & GP_BTN_L1);
+        case Key_R1:       return !!(pad.buttons & GP_BTN_R1);
+        case Key_L3:       return !!(pad.buttons & GP_BTN_L3);
+        case Key_R3:       return !!(pad.buttons & GP_BTN_R3);
+        case Key_PS:       return !!(pad.misc & GP_MISC_PS);
+        case Key_Share:    return !!(pad.misc & GP_MISC_SHARE);
+        case Key_Options:  return !!(pad.misc & GP_MISC_OPTIONS);
+        case Key_Up:       return !!(pad.dpad & GP_DPAD_UP);
+        case Key_Down:     return !!(pad.dpad & GP_DPAD_DOWN);
+        case Key_Right:    return !!(pad.dpad & GP_DPAD_RIGHT);
+        case Key_Left:     return !!(pad.dpad & GP_DPAD_LEFT);
         default:           return false;
     }
+}
+
+// Function assigned to a button, -1 = none
+static int8_t function_of (uint_fast8_t k)
+{
+    for(uint_fast8_t f = 0; f < Fn_Count; f++) {
+        if(gp_settings.key[f] == k)
+            return (int8_t)f;
+    }
+
+    return -1;
 }
 
 static bool enqueue (const char *cmd)
@@ -515,48 +576,37 @@ static void step_jog (uint_fast8_t axis, float dir)
 }
 
 // Tap action, called on press.
-static void on_press (gp_button_t b, sys_state_t state)
+static void on_press (gp_function_t f, sys_state_t state)
 {
-    bool job = !!(state & (STATE_CYCLE|STATE_HOLD|STATE_TOOL_CHANGE));
+    switch(f) {
 
-    switch(b) {
-
-        case Btn_Circle:
+        case Fn_Hold:
             if(state & (STATE_CYCLE|STATE_JOG))
                 grbl.enqueue_realtime_command(CMD_FEED_HOLD);
             break;
 
-        case Btn_Cross:
+        case Fn_Resume:
             if(state & (STATE_HOLD|STATE_TOOL_CHANGE))
                 grbl.enqueue_realtime_command(CMD_CYCLE_START);
             break;
 
-        case Btn_PS:
+        case Fn_Unlock:
             if(sys.blocking_event)
                 grbl.enqueue_realtime_command(CMD_RESET);
             else if((state & STATE_ALARM) && sys.alarm != Alarm_HomingRequired)
                 enqueue("$X");
             break;
 
-        case Btn_Share:
+        case Fn_Step:
             tft_move_step_next();
             send_state(state, 3);
             break;
 
-        case Btn_Up:
-        case Btn_Down:
-            if(job)
-                grbl.enqueue_realtime_command(b == Btn_Up ? CMD_OVERRIDE_FEED_COARSE_PLUS : CMD_OVERRIDE_FEED_COARSE_MINUS);
-            else if(enabled && state == STATE_IDLE)
-                step_jog(Y_AXIS, b == Btn_Up ? 1.0f : -1.0f);
-            break;
-
-        case Btn_Right:
-        case Btn_Left:
-            if(job)
-                grbl.enqueue_realtime_command(b == Btn_Right ? CMD_OVERRIDE_SPINDLE_COARSE_PLUS : CMD_OVERRIDE_SPINDLE_COARSE_MINUS);
-            else if(enabled && state == STATE_IDLE)
-                step_jog(X_AXIS, b == Btn_Right ? 1.0f : -1.0f);
+        case Fn_JogEnable:  // switches on only while idle with the sticks and triggers at rest
+            if(enabled)
+                set_enabled(false, state);
+            else if(state == STATE_IDLE && at_rest())
+                set_enabled(true, state);
             break;
 
         default:
@@ -565,30 +615,30 @@ static void on_press (gp_button_t b, sys_state_t state)
 }
 
 // Hold action, called once when the button has been held for GP_HOLD_MS.
-static void on_hold (gp_button_t b, sys_state_t state)
+static void on_hold (gp_function_t f, sys_state_t state)
 {
     bool idle = state == STATE_IDLE;
 
-    switch(b) {
+    switch(f) {
 
-        case Btn_Circle:    // STOP: abort the held job, the machine stands still so the position is kept
+        case Fn_Hold:       // STOP: abort the held job, the machine stands still so the position is kept
             if((state & STATE_HOLD) && sys.holding_state == Hold_Complete) {
                 grbl.enqueue_realtime_command(CMD_RESET);
                 send_state(state, 3);
             }
             break;
 
-        case Btn_Triangle:
+        case Fn_Home:
             if((idle || (state & STATE_ALARM)) && enqueue("$H"))
                 send_state(state, 3);
             break;
 
-        case Btn_Square:
+        case Fn_ZeroXY:
             if(idle && enqueue("G10L20P0X0Y0"))
                 send_state(state, 3);
             break;
 
-        case Btn_R1:
+        case Fn_ZeroZ:
             if(idle && enqueue("G10L20P0Z0"))
                 send_state(state, 3);
             break;
@@ -598,28 +648,78 @@ static void on_hold (gp_button_t b, sys_state_t state)
     }
 }
 
+// D-pad: jog steps when idle, overrides during a job
+static void on_dpad (gp_key_t k, sys_state_t state)
+{
+    bool job = !!(state & (STATE_CYCLE|STATE_HOLD|STATE_TOOL_CHANGE));
+
+    if(k == Key_Up || k == Key_Down) {
+        if(job)
+            grbl.enqueue_realtime_command(k == Key_Up ? CMD_OVERRIDE_FEED_COARSE_PLUS : CMD_OVERRIDE_FEED_COARSE_MINUS);
+        else if(enabled && state == STATE_IDLE)
+            step_jog(Y_AXIS, k == Key_Up ? 1.0f : -1.0f);
+    } else {
+        if(job)
+            grbl.enqueue_realtime_command(k == Key_Right ? CMD_OVERRIDE_SPINDLE_COARSE_PLUS : CMD_OVERRIDE_SPINDLE_COARSE_MINUS);
+        else if(enabled && state == STATE_IDLE)
+            step_jog(X_AXIS, k == Key_Right ? 1.0f : -1.0f);
+    }
+}
+
 static void poll_buttons (sys_state_t state, uint32_t now)
 {
-    for(uint_fast8_t i = 0; i < Btn_Count; i++) {
+    int8_t f;
 
-        bool down = is_down((gp_button_t)i);
+    for(uint_fast8_t k = Key_Cross; k < Key_Count; k++) {
 
-        if(down && !btn[i].down) {
-            btn[i].since = now;
-            btn[i].fired = false;
-            on_press((gp_button_t)i, state);
-        } else if(down && !btn[i].fired && now - btn[i].since >= GP_HOLD_MS) {
-            btn[i].fired = true;
-            on_hold((gp_button_t)i, state);
+        bool down = is_down((gp_key_t)k);
+
+        if(down && !btn[k].down) {
+            btn[k].since = now;
+            btn[k].fired = learning;    // a button pressed while learning does nothing, not even when held on
+            if(learning) {
+                if(k < KEY_ASSIGNABLE) {
+                    learned = (int8_t)k;
+                    learning = false;
+                }
+            } else if(k >= Key_Up)
+                on_dpad((gp_key_t)k, state);
+            else if((f = function_of(k)) >= 0)
+                on_press((gp_function_t)f, state);
+        } else if(down && !btn[k].fired && now - btn[k].since >= GP_HOLD_MS) {
+            btn[k].fired = true;
+            if(k < KEY_ASSIGNABLE && (f = function_of(k)) >= 0)
+                on_hold((gp_function_t)f, state);
         }
 
-        btn[i].down = down;
+        btn[k].down = down;
     }
+}
+
+// Learn mode for a display: the next button pressed is reported by gamepad_learned()
+// instead of acting on it. Returns false without a gamepad link.
+bool gamepad_learn (bool on)
+{
+    learning = on && gp_stream != NULL;
+    learned = -1;
+    learn_start = hal.get_elapsed_ticks();
+
+    return learning || !on;
+}
+
+// The button pressed in learn mode (setting value), once, else -1.
+int8_t gamepad_learned (void)
+{
+    int8_t k = learned;
+
+    learned = -1;
+
+    return k;
 }
 
 static void gp_realtime (sys_state_t state)
 {
-    static bool was_connected = false, options_was = false;
+    static bool was_connected = false;
 
     if(on_execute_realtime)
         on_execute_realtime(state);
@@ -636,12 +736,14 @@ static void gp_realtime (sys_state_t state)
 
     last_poll = now;
 
+    if(learning && now - learn_start >= GP_LEARN_MS)
+        learning = false;
+
     bool connected = alive && pad.connected;
 
     // Lost connection or new connection: jog enable off, buttons released.
     if(connected != was_connected) {
         was_connected = connected;
-        options_was = false;
         memset(step, 0, sizeof(step));
         memset(btn, 0, sizeof(btn));
         set_enabled(false, state);
@@ -650,16 +752,6 @@ static void gp_realtime (sys_state_t state)
     // Alarm or job: jog enable off.
     if(state & (STATE_ALARM|STATE_ESTOP|STATE_CYCLE))
         set_enabled(false, state);
-
-    // Options toggles the jog enable, switching on only while idle and at rest.
-    bool options = connected && !!(pad.misc & GP_MISC_OPTIONS);
-    if(options && !options_was) {
-        if(enabled)
-            set_enabled(false, state);
-        else if(state == STATE_IDLE && at_rest())
-            set_enabled(true, state);
-    }
-    options_was = options;
 
     if(connected)
         poll_buttons(state, now);
@@ -696,7 +788,7 @@ static void gp_realtime (sys_state_t state)
 
     int8_t q[3] = {0};
 
-    if(connected)
+    if(connected && !learning)
         read_sticks(q);
 
     if(q[0] || q[1] || q[2])
@@ -732,6 +824,91 @@ static void gp_realtime (sys_state_t state)
 
     if((plan_get_buffer_size() - plan_get_block_buffer_available()) < JOY_MAX_QUEUED)
         send_segment(q);
+}
+
+// ------------------------------------------------------------------------
+// Settings: the button of each function
+// ------------------------------------------------------------------------
+
+static status_code_t set_key (setting_id_t id, uint_fast16_t value)
+{
+    uint_fast8_t f = id - GP_SETTING_FIRST;
+
+    if(f >= Fn_Count || value >= KEY_ASSIGNABLE)
+        return Status_SettingValueOutOfRange;
+
+    // feed hold / STOP always keeps a button: it cannot be cleared and its button cannot be given away
+    if((f == Fn_Hold && value == Key_None) || (f != Fn_Hold && value != Key_None && value == gp_settings.key[Fn_Hold]))
+        return Status_SettingValueOutOfRange;
+
+    // a button has one function: the new assignment wins, the previous one is cleared
+    if(value != Key_None) {
+        for(uint_fast8_t i = 0; i < Fn_Count; i++) {
+            if(i != f && gp_settings.key[i] == value)
+                gp_settings.key[i] = Key_None;
+        }
+    }
+
+    gp_settings.key[f] = (uint8_t)value;
+
+    return Status_OK;
+}
+
+static uint32_t get_key (setting_id_t id)
+{
+    uint_fast8_t f = id - GP_SETTING_FIRST;
+
+    return f < Fn_Count ? gp_settings.key[f] : Key_None;
+}
+
+static const setting_group_detail_t gp_groups[] = {
+    { Group_Root, Group_UserSettings, "Gamepad" }
+};
+
+static const setting_detail_t gp_setting_details[] = {
+    { Setting_UserDefined_0, Group_UserSettings, "Gamepad feed hold/STOP", NULL, Format_RadioButtons, KEY_NAMES, NULL, NULL, Setting_NonCoreFn, set_key, get_key, NULL },
+    { Setting_UserDefined_1, Group_UserSettings, "Gamepad resume", NULL, Format_RadioButtons, KEY_NAMES, NULL, NULL, Setting_NonCoreFn, set_key, get_key, NULL },
+    { Setting_UserDefined_2, Group_UserSettings, "Gamepad homing", NULL, Format_RadioButtons, KEY_NAMES, NULL, NULL, Setting_NonCoreFn, set_key, get_key, NULL },
+    { Setting_UserDefined_3, Group_UserSettings, "Gamepad X0 Y0", NULL, Format_RadioButtons, KEY_NAMES, NULL, NULL, Setting_NonCoreFn, set_key, get_key, NULL },
+    { Setting_UserDefined_4, Group_UserSettings, "Gamepad Z0", NULL, Format_RadioButtons, KEY_NAMES, NULL, NULL, Setting_NonCoreFn, set_key, get_key, NULL },
+    { Setting_UserDefined_5, Group_UserSettings, "Gamepad unlock/reset", NULL, Format_RadioButtons, KEY_NAMES, NULL, NULL, Setting_NonCoreFn, set_key, get_key, NULL },
+    { Setting_UserDefined_6, Group_UserSettings, "Gamepad jog step", NULL, Format_RadioButtons, KEY_NAMES, NULL, NULL, Setting_NonCoreFn, set_key, get_key, NULL },
+    { Setting_UserDefined_7, Group_UserSettings, "Gamepad jog enable", NULL, Format_RadioButtons, KEY_NAMES, NULL, NULL, Setting_NonCoreFn, set_key, get_key, NULL }
+};
+
+static const setting_descr_t gp_setting_descr[] = {
+    { Setting_UserDefined_0, "Button for feed hold (tap) and STOP (hold after the hold has completed). Cannot be none." },
+    { Setting_UserDefined_1, "Button for resume (tap) after a hold or tool change." },
+    { Setting_UserDefined_2, "Button for homing (hold)." },
+    { Setting_UserDefined_3, "Button for X0 Y0 in the current work offset (hold)." },
+    { Setting_UserDefined_4, "Button for Z0 in the current work offset (hold)." },
+    { Setting_UserDefined_5, "Button for unlock, or reset after a critical alarm (tap)." },
+    { Setting_UserDefined_6, "Button for the next D-pad jog step (tap)." },
+    { Setting_UserDefined_7, "Button for jog enable on/off (tap)." }
+};
+
+static void gp_settings_save (void)
+{
+    hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&gp_settings, sizeof(gp_settings_t), true);
+}
+
+static void gp_settings_restore (void)
+{
+    gp_settings = gp_defaults;
+    gp_settings_save();
+}
+
+static void gp_settings_load (void)
+{
+    if(hal.nvs.memcpy_from_nvs((uint8_t *)&gp_settings, nvs_address, sizeof(gp_settings_t), true) != NVS_TransferResult_OK)
+        gp_settings_restore();
+
+    for(uint_fast8_t f = 0; f < Fn_Count; f++) {
+        if(gp_settings.key[f] >= KEY_ASSIGNABLE)
+            gp_settings.key[f] = Key_None;
+    }
+    if(gp_settings.key[Fn_Hold] == Key_None)
+        gp_settings.key[Fn_Hold] = gp_defaults.key[Fn_Hold];
 }
 
 // ------------------------------------------------------------------------
@@ -772,6 +949,22 @@ static void gp_report_options (bool newopt)
 
 void gamepad_init (void)
 {
+    static setting_details_t setting_details = {
+        .groups = gp_groups,
+        .n_groups = sizeof(gp_groups) / sizeof(setting_group_detail_t),
+        .settings = gp_setting_details,
+        .n_settings = sizeof(gp_setting_details) / sizeof(setting_detail_t),
+        .descriptions = gp_setting_descr,
+        .n_descriptions = sizeof(gp_setting_descr) / sizeof(setting_descr_t),
+        .save = gp_settings_save,
+        .load = gp_settings_load,
+        .restore = gp_settings_restore
+    };
+
+    // without room in the NVS the default buttons are used
+    if((nvs_address = nvs_alloc(sizeof(gp_settings_t))))
+        settings_register(&setting_details);
+
     gp_stream = stream_open_instance(GP_STREAM, GP_BAUD, gp_rx_char, "Gamepad");
 
     on_execute_realtime = grbl.on_execute_realtime;
