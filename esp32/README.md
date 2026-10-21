@@ -8,6 +8,15 @@ wiring are described at the top of [`sketch.cpp`](sketch.cpp).
 An ESP32-S3 or -C3 only has Bluetooth Low Energy and works with Xbox Series X|S controllers
 only, PS4/PS5 controllers need the classic ESP32 (Bluetooth Classic).
 
+Tested and working with a PS4 controller:
+
+- **ESP32 DevKit** (ESP32-WROOM-32, 30/38 pins)
+- **D1 Mini ESP32** (ESP32-WROOM-32, USB-C with CH9102F). It has no BOOT button: pair the controller
+  from the display (gamepad plugin 1.2, display link 1.1), see [Pairing](#pairing).
+
+Both use the same firmware (environment `esp32dev`). A new board is flashed completely once
+(`firmware.factory.bin` at 0x0, or `pio run -e esp32dev -t upload`).
+
 ## Build
 
 Bluepad32 is built from its official ESP-IDF + Arduino template, only `sketch.cpp` comes
@@ -29,12 +38,15 @@ from this repository. ESP-IDF does not build in paths with spaces.
 
 ## Wiring
 
-| grblHAL board UART (e.g. BTT Octopus Pro TFT header) | ESP32 DevKit |
-|---|---|
-| 5V | 5V / VIN |
-| GND | GND |
-| TX | GPIO16 (RX2, "D16") |
-| RX | GPIO17 (TX2, "D17") |
+| grblHAL board UART (e.g. BTT Octopus Pro TFT header) | ESP32 DevKit | D1 Mini ESP32 |
+|---|---|---|
+| 5V | 5V / VIN | VCC |
+| GND | GND | GND |
+| TX | GPIO16 (RX2, "D16") | IO16 |
+| RX | GPIO17 (TX2, "D17") | IO17 |
+
+On the D1 Mini ESP32 the four pins are next to each other in the inner pin row on the TXD/RXD side
+(IO17, IO16, GND, VCC).
 
 Do not use RX0/TX0, they belong to the USB port of the ESP32. While the ESP32 is connected to the PC
 over USB leave the 5V wire open. A reset pin on the board connector (e.g. RST on the BTT TFT header)

@@ -52,12 +52,15 @@ is USART1 on the TFT header. The port must not be used by anything else (e.g. MP
 
 ## Wiring
 
-| Board UART | ESP32 DevKit |
-|---|---|
-| 5V | 5V / VIN |
-| GND | GND |
-| TX | GPIO16 (RX2) |
-| RX | GPIO17 (TX2) |
+| Board UART | ESP32 DevKit | D1 Mini ESP32 |
+|---|---|---|
+| 5V | 5V / VIN | VCC |
+| GND | GND | GND |
+| TX | GPIO16 (RX2) | IO16 |
+| RX | GPIO17 (TX2) | IO17 |
+
+Both boards are tested and work. The D1 Mini ESP32 has no BOOT button, its controller is paired from
+the display, see [`esp32/README.md`](esp32/README.md).
 
 While the ESP32 is connected to the PC over USB leave the 5V wire open.
 
