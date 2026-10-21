@@ -28,23 +28,28 @@
   Allowed controllers
     Only controllers stored in the allow list may connect, others are disconnected at once.
     A stored controller may always pair again (e.g. after it was used on a console).
-    To add a new controller: hold BOOT (GPIO0) for 3 s, the on-board LED blinks for 60 s,
-    put the controller in pairing mode (PS4: Share + PS until the light bar flashes).
-    Hold BOOT for 10 s to clear the allow list.
+    To add a new controller: hold BOOT (GPIO0) for 3 s or start it on the display ($PA,1), the
+    on-board LED blinks for 60 s, put the controller in pairing mode (PS4: Share + PS until the
+    light bar flashes). Hold BOOT for 10 s or $PA,2 from the display to clear the allow list
+    (a connected controller is disconnected). Boards without BOOT button pair from the display.
 
   Protocol (ASCII lines, 115200 baud, checksum = XOR of all characters between '$' and '*')
     ESP32 -> board, every 20 ms:
-      $GP,<seq>,<conn>,<lx>,<ly>,<rx>,<ry>,<l2>,<r2>,<buttons>,<dpad>,<misc>,<battery>*<hh>
+      $GP,<seq>,<conn>,<lx>,<ly>,<rx>,<ry>,<l2>,<r2>,<buttons>,<dpad>,<misc>,<battery>,<pair>*<hh>
         conn     1 = controller connected, 0 = no controller (heartbeat, all values 0)
         lx..ry   sticks -512..511 (Bluepad32, up = negative)
         l2, r2   analog triggers 0..1023
         buttons  Bluepad32 button bitmask (hex), dpad (hex), misc buttons (hex)
         battery  0..255, 0 = unknown
+        pair     seconds left in the pairing window, 0 = closed
     board -> ESP32, on changes and once a second:
       $ST,<state>,<event>,<enabled>*<hh>
         state    0 idle, 1 run, 2 hold, 3 alarm, 4 jog, 5 homing, 6 other
         event    0 none, 1 alarm/limit, 2 job finished, 3 short click (acknowledge)
         enabled  jog enable 1/0
+    board -> ESP32, from the display:
+      $PA,<cmd>*<hh>
+        cmd      1 = open the pairing window, 0 = close it, 2 = clear the allow list
 
   Light bar
     idle locked blue, idle or jog with jog enable red, job green, hold orange, homing violet,
@@ -124,6 +129,16 @@ static void allow_clear (void)
     n_allowed = 0;
     prefs.remove("allowed");
     BP32.forgetBluetoothKeys();
+    if(pad)
+        pad->disconnect();
+    Console.println("Allow list cleared");
+}
+
+static void pairing_start (uint32_t now)
+{
+    pairing = true;
+    pairing_until = now + PAIR_WINDOW_MS;
+    Console.println("Pairing window open for 60 s");
 }
 
 // ------------------------------------------------------------------------
@@ -177,12 +192,14 @@ static void send_state (void)
     static uint8_t seq = 0;
     char body[96];
 
+    unsigned pair = pairing ? (unsigned)((int32_t)(pairing_until - millis()) + 999) / 1000 : 0;
+
     if(pad && pad->isConnected())
-        snprintf(body, sizeof(body), "GP,%u,1,%d,%d,%d,%d,%d,%d,%X,%X,%X,%u", seq++,
+        snprintf(body, sizeof(body), "GP,%u,1,%d,%d,%d,%d,%d,%d,%X,%X,%X,%u,%u", seq++,
                   pad->axisX(), pad->axisY(), pad->axisRX(), pad->axisRY(),
-                   pad->brake(), pad->throttle(), pad->buttons(), pad->dpad(), pad->miscButtons(), pad->battery());
+                   pad->brake(), pad->throttle(), pad->buttons(), pad->dpad(), pad->miscButtons(), pad->battery(), pair);
     else
-        snprintf(body, sizeof(body), "GP,%u,0,0,0,0,0,0,0,0,0,0,0", seq++);
+        snprintf(body, sizeof(body), "GP,%u,0,0,0,0,0,0,0,0,0,0,0,%u", seq++, pair);
 
     Serial2.printf("$%s*%02X\n", body, checksum(body));
 }
@@ -252,7 +269,7 @@ static void update_rumble (uint32_t now)
     }
 }
 
-// Parse "$ST,<state>,<event>,<enabled>*hh" lines from the board
+// Parse "$ST,<state>,<event>,<enabled>*hh" and "$PA,<cmd>*hh" lines from the board
 static void receive (uint32_t now)
 {
     static char line[48];
@@ -265,13 +282,21 @@ static void receive (uint32_t now)
         else if(c == '\n' || c == '\r') {
             line[len] = '\0';
             char *star = strchr(line, '*');
-            int state, event, enabled;
+            int state, event, enabled, cmd;
             if(star && len > 3) {
                 *star = '\0';
-                if(strtoul(star + 1, NULL, 16) == checksum(line) && sscanf(line, "ST,%d,%d,%d", &state, &event, &enabled) == 3) {
+                if(strtoul(star + 1, NULL, 16) != checksum(line))
+                    ;
+                else if(sscanf(line, "ST,%d,%d,%d", &state, &event, &enabled) == 3) {
                     machine_state = state;
                     jog_enabled = enabled;
                     show_event(event, now);
+                } else if(sscanf(line, "PA,%d", &cmd) == 1) {
+                    pairing = false;
+                    if(cmd == 1)
+                        pairing_start(now);
+                    else if(cmd == 2)
+                        allow_clear();
                 }
             }
             len = 0;
@@ -295,14 +320,10 @@ static void poll_boot_button (uint32_t now)
         if(!handled && now - down_since >= CLEAR_HOLD_MS) {
             allow_clear();
             handled = true;
-            Console.println("Allow list cleared");
         }
     } else {
-        if(down_since && !handled && now - down_since >= PAIR_HOLD_MS) {
-            pairing = true;
-            pairing_until = now + PAIR_WINDOW_MS;
-            Console.println("Pairing window open for 60 s");
-        }
+        if(down_since && !handled && now - down_since >= PAIR_HOLD_MS)
+            pairing_start(now);
         down_since = 0;
         handled = false;
     }

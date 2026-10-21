@@ -42,8 +42,11 @@ is not connected.
 
 ## Pairing
 
-- Hold **BOOT** for 3 s: the on-board LED blinks for 60 s, put the controller in pairing mode
-  (PS4: Share + PS until the light bar flashes). The controller is added to the allow list.
+- Hold **BOOT** for 3 s or tap **Pair controller** on the gamepad screen of the display: the on-board
+  LED blinks for 60 s, put the controller in pairing mode (PS4: Share + PS until the light bar flashes).
+  The controller is added to the allow list.
 - A controller that is already allowed can pair again at any time (e.g. after it was used on a console).
-- Hold **BOOT** for 10 s to clear the allow list.
+- Hold **BOOT** for 10 s or hold **Forget all** on the display to clear the allow list.
 - The on-board LED is on while a controller is connected.
+- Boards without a BOOT button (e.g. D1 Mini ESP32) pair from the display only. This needs the gamepad
+  plugin 1.2 and the display link 1.1 in the controller firmware.

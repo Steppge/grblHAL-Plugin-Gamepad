@@ -20,16 +20,20 @@
 
   v1.0 - jogging, jog enable on Options, buttons, connection watchdog. Keep a hand on the power switch.
   v1.1 - button assignment in settings $450-$457, learn mode for a display.
+  v1.2 - pairing a controller and clearing the allow list of the ESP32 from a display.
 
   An ESP32 (see esp32/) connects a PS4 controller (DualShock 4; DualSense and Xbox Series X|S
   work the same way) and sends its state every 20 ms over UART to a serial port of the
   controller board (GAMEPAD_STREAM; BTT Octopus Pro: TFT header, USART1, stream instance 0):
 
-    $GP,<seq>,<conn>,<lx>,<ly>,<rx>,<ry>,<l2>,<r2>,<buttons>,<dpad>,<misc>,<battery>*<hh>
+    $GP,<seq>,<conn>,<lx>,<ly>,<rx>,<ry>,<l2>,<r2>,<buttons>,<dpad>,<misc>,<battery>,<pair>*<hh>
 
-  and gets the machine state back for the light bar and rumble (see esp32/sketch.cpp):
+  (pair: seconds left in the pairing window, missing with ESP32 firmware before v1.2) and gets the
+  machine state back for the light bar and rumble (see esp32/sketch.cpp):
 
     $ST,<state>,<event>,<enabled>*<hh>     event: 1 alarm, 2 job finished, 3 acknowledge
+    $PA,<cmd>*<hh>                         from a display: 1 open the pairing window, 0 close it,
+                                           2 clear the allow list
 
   Jogging works like the analog joystick plugin (joystick_plugin.c): JOY_STEPS speed steps per
   direction with hysteresis, step 1 has a fixed slow speed, segments are streamed as $J= jogs.
@@ -60,6 +64,7 @@
 
   Learn mode for a display (gamepad_learn(), gamepad_learned()): the next button pressed is reported
   instead of acting on it, sticks and buttons do nothing meanwhile (ends after GP_LEARN_MS).
+  A display can also pair a controller (gamepad_pair()) and read the link state (gamepad_status()).
 
   Safety: releasing a stick or trigger stops the axis, no valid packet for GP_TIMEOUT_MS stops
   everything. Jog enable switches off by itself after GP_ENABLE_IDLE_MS without motion, when the
@@ -89,7 +94,7 @@
 #include "grbl/stream.h"
 #include "grbl/nvs_buffer.h"
 
-#define GP_VERSION "1.1"
+#define GP_VERSION "1.2"
 
 // ------------------------------------------------------------------------
 // Configuration
@@ -118,6 +123,12 @@
 #define GP_STEP_RATE_PCT  30.0f     // D-pad step jog feed in % of the axis max rate
 #define GP_JOB_MIN_MS    10000      // "job finished" rumble only after jobs running at least this long
 #define GP_LEARN_MS      15000      // learn mode ends after this long without a button
+
+// gamepad_status() flags, the same in display_link.c
+#define GAMEPAD_PLUGIN    0x01      // this plugin is in the firmware
+#define GAMEPAD_ESP32     0x02      // packets from the ESP32 arrive
+#define GAMEPAD_CONNECTED 0x04      // a controller is connected to the ESP32
+#define GAMEPAD_PAIRING   0x08      // the pairing window of the ESP32 is open
 
 // Bluepad32 button bits (PS4 names)
 #define GP_BTN_CROSS     0x0001     // BUTTON_A
@@ -179,6 +190,7 @@ typedef struct {
     uint16_t l2, r2;        // triggers 0..1023
     uint16_t buttons;
     uint8_t dpad, misc, battery;
+    uint8_t pair;           // seconds left in the pairing window of the ESP32, 0 = closed
 } gp_data_t;
 
 static io_stream_t const *gp_stream = NULL;
@@ -225,16 +237,19 @@ static bool parse_packet (char *line)
     if(strtoul(star + 1, NULL, 16) != sum)
         return false;
 
-    int seq, conn, lx, ly, rx, ry, l2, r2, bat;
+    int seq, conn, lx, ly, rx, ry, l2, r2, bat, pair = 0, n;
     unsigned int buttons, dpad, misc;
 
-    if(sscanf(line, "GP,%d,%d,%d,%d,%d,%d,%d,%d,%x,%x,%x,%d", &seq, &conn, &lx, &ly, &rx, &ry, &l2, &r2, &buttons, &dpad, &misc, &bat) != 12)
+    // pair is missing with ESP32 firmware before v1.2
+    n = sscanf(line, "GP,%d,%d,%d,%d,%d,%d,%d,%d,%x,%x,%x,%d,%d", &seq, &conn, &lx, &ly, &rx, &ry, &l2, &r2, &buttons, &dpad, &misc, &bat, &pair);
+    if(n != 12 && n != 13)
         return false;
 
     pad.connected = conn == 1;
     pad.lx = lx; pad.ly = ly; pad.rx = rx; pad.ry = ry;
     pad.l2 = l2; pad.r2 = r2;
     pad.buttons = buttons; pad.dpad = dpad; pad.misc = misc; pad.battery = bat;
+    pad.pair = pair < 0 ? 0 : (pair > 255 ? 255 : pair);
 
     return true;
 }
@@ -431,6 +446,18 @@ static void jog_stop (sys_state_t state)
     }
 }
 
+// Send a line to the ESP32: "$<body>*<checksum>"
+static void send_body (const char *body)
+{
+    char line[40];
+    uint8_t sum = 0;
+
+    for(const char *p = body; *p; p++)
+        sum ^= (uint8_t)*p;
+    snprintf(line, sizeof(line), "$%s*%02X\n", body, sum);
+    gp_stream->write(line);
+}
+
 // Tell the ESP32 the machine state and the jog enable (light bar, rumble).
 static void send_state (sys_state_t state, uint8_t event)
 {
@@ -446,14 +473,10 @@ static void send_state (sys_state_t state, uint8_t event)
     if(st == last_state && enabled == last_enabled && !event && now - last_sent < 1000)
         return;
 
-    char body[24], line[32];
-    uint8_t sum = 0;
+    char body[24];
 
     snprintf(body, sizeof(body), "ST,%d,%u,%d", st, event, enabled ? 1 : 0);
-    for(char *p = body; *p; p++)
-        sum ^= (uint8_t)*p;
-    snprintf(line, sizeof(line), "$%s*%02X\n", body, sum);
-    gp_stream->write(line);
+    send_body(body);
 
     last_state = st;
     last_enabled = enabled;
@@ -715,6 +738,38 @@ int8_t gamepad_learned (void)
     learned = -1;
 
     return k;
+}
+
+// Pairing for a display: 1 opens the pairing window of the ESP32 (60 s), 0 closes it,
+// 2 clears its allow list. Returns false without a working link to the ESP32.
+bool gamepad_pair (uint8_t cmd)
+{
+    char body[8];
+
+    if(gp_stream == NULL || !alive || cmd > 2)
+        return false;
+
+    snprintf(body, sizeof(body), "PA,%u", cmd);
+    send_body(body);
+
+    return true;
+}
+
+// Link state for a display: GAMEPAD_xxx flags, pair_left gets the seconds left in the pairing window.
+uint8_t gamepad_status (uint8_t *pair_left)
+{
+    uint8_t flags = GAMEPAD_PLUGIN;
+
+    *pair_left = 0;
+    if(gp_stream != NULL && alive) {
+        flags |= GAMEPAD_ESP32;
+        if(pad.connected)
+            flags |= GAMEPAD_CONNECTED;
+        if((*pair_left = pad.pair))
+            flags |= GAMEPAD_PAIRING;
+    }
+
+    return flags;
 }
 
 static void gp_realtime (sys_state_t state)
