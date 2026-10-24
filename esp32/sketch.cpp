@@ -251,6 +251,8 @@ static void update_light (uint32_t now)
     if(color != light_shown) {
         light_shown = color;
         pad->setColorLED(color >> 16, (color >> 8) & 0xFF, color & 0xFF);
+        if(machine_state != 3)      // not while it blinks
+            Console.printf("light: %u,%u,%u\n", (unsigned)(color >> 16), (unsigned)((color >> 8) & 0xFF), (unsigned)(color & 0xFF));
     }
 }
 
@@ -301,6 +303,8 @@ static void receive (uint32_t now)
                 if(strtoul(star + 1, NULL, 16) != checksum(line))
                     ;
                 else if(sscanf(line, "ST,%d,%d,%d", &state, &event, &enabled) == 3) {
+                    if(state != machine_state || enabled != jog_enabled)
+                        Console.printf("ST: state %d, enabled %d\n", state, enabled);
                     machine_state = state;
                     jog_enabled = enabled;
                     show_event(event, now);
