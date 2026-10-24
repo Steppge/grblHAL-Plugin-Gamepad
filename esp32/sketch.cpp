@@ -56,7 +56,8 @@
 
   Light bar
     idle locked blue, idle or jog with jog enable red, job green, hold orange, homing violet,
-    alarm red blinking. Controller battery below 20 %: short yellow flash every 10 s.
+    alarm red blinking (red / violet with jog enable: home works). Controller battery below 20 %:
+    short yellow flash every 10 s.
   Rumble
     short click on acknowledges, long strong on an alarm, two medium pulses when a job is finished.
 */
@@ -226,7 +227,7 @@ static uint32_t state_color (uint32_t now)
         case 0:  return jog_enabled ? RGB(100, 0, 0) : RGB(0, 0, 60);  // idle: red enabled, blue locked
         case 1:  return RGB(0, 70, 0);                                 // job: green
         case 2:  return RGB(100, 40, 0);                               // hold: orange
-        case 3:  return (now / BLINK_MS) & 1 ? RGB(100, 0, 0) : 0;      // alarm: red blinking
+        case 3:  return (now / BLINK_MS) & 1 ? RGB(100, 0, 0) : (jog_enabled ? RGB(50, 0, 60) : 0);  // alarm: red blinking, red/violet with enable
         case 4:  return RGB(100, 0, 0);                                // jog: red (enabled)
         case 5:  return RGB(50, 0, 60);                                // homing: violet
         default: return RGB(30, 30, 30);                               // other: white

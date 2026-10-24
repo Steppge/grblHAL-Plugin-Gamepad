@@ -74,9 +74,9 @@ While the ESP32 is connected to the PC over USB leave the 5V wire open.
 | Options (`$457`) | Jog enable on/off (light bar red / blue) |
 | Circle (`$450`) | Tap: feed hold. After the hold: hold = STOP (abort the job) |
 | Cross (`$451`) | Tap: resume (cycle start) |
-| Triangle (`$452`) | Hold: home |
-| Square (`$453`) | Hold: X0 Y0 |
-| R1 (`$454`) | Hold: Z0 |
+| Triangle (`$452`) | Hold: home (needs jog enable) |
+| Square (`$453`) | Hold: X0 Y0 (needs jog enable) |
+| R1 (`$454`) | Hold: Z0 (needs jog enable) |
 | PS (`$455`) | Tap: reset after a hard limit alarm, else unlock |
 | Share (`$456`) | Tap: next jog step 0.01 / 0.05 / 0.1 / 1 / 10 mm |
 | D-pad, idle | One jog step X-/X+/Y-/Y+ per press (needs jog enable) |
@@ -105,16 +105,18 @@ otherwise the plugin uses its own.
 | Job running | green |
 | Hold | orange |
 | Homing | violet |
-| Alarm | red blinking |
+| Alarm | red blinking, red / violet with jog enable (home works) |
 | Controller battery below 20 % | short yellow flash every 10 s |
 
 Rumble: short click on acknowledges, long on an alarm, two pulses when a job running at least 10 s has finished.
 
 ## Safety
 
-- Jogging needs the jog enable (Options). It switches off by itself after 60 s without motion, when the
-  controller disconnects, on an alarm, when a job starts and at power-up. It can only be switched on while
-  the machine is idle and all sticks and triggers are at rest.
+- Jogging, home, X0 Y0 and Z0 need the jog enable (Options). It switches off by itself after 60 s without
+  motion, when the controller disconnects, when an alarm comes up, when a job starts and at power-up. It can
+  only be switched on while the machine is idle or in an alarm and all sticks and triggers are at rest. In an
+  alarm it only enables homing (grblHAL refuses jogging): after power-up press Options, then hold Triangle.
+- Feed hold / STOP, resume, unlock / reset and the jog step work without the jog enable.
 - Releasing a stick or trigger stops the axis. No valid packet for 200 ms (cable, ESP32) stops everything.
 - Jogging only happens while idle or jogging, never during a job or an alarm.
 - The ESP32 only accepts controllers on its allow list. Packets carry a checksum.

@@ -21,6 +21,7 @@
   v1.0 - jogging, jog enable on Options, buttons, connection watchdog. Keep a hand on the power switch.
   v1.1 - button assignment in settings $450-$457, learn mode for a display.
   v1.2 - pairing a controller and clearing the allow list of the ESP32 from a display.
+  v1.3 - home, X0 Y0 and Z0 need the jog enable; it can be switched on in an alarm too (to home).
 
   An ESP32 (see esp32/) connects a PS4 controller (DualShock 4; DualSense and Xbox Series X|S
   work the same way) and sends its state every 20 ms over UART to a serial port of the
@@ -48,9 +49,9 @@
 
     $450  Circle    tap: feed hold (job or jog), after the hold has completed: hold = STOP (abort the job)
     $451  Cross     tap: resume (cycle start) after a hold or tool change
-    $452  Triangle  hold: home ($H)
-    $453  Square    hold: X0 Y0 (G10 L20 P0)
-    $454  R1        hold: Z0
+    $452  Triangle  hold: home ($H), needs the jog enable
+    $453  Square    hold: X0 Y0 (G10 L20 P0), needs the jog enable
+    $454  R1        hold: Z0, needs the jog enable
     $455  PS        tap: reset after a critical alarm (hard limit), else unlock ($X)
     $456  Share     tap: next jog step 0.01 / 0.05 / 0.1 / 1 / 10 mm (shared with the display Move screen)
     $457  Options   tap: jog enable on/off
@@ -68,8 +69,10 @@
 
   Safety: releasing a stick or trigger stops the axis, no valid packet for GP_TIMEOUT_MS stops
   everything. Jog enable switches off by itself after GP_ENABLE_IDLE_MS without motion, when the
-  controller disconnects, on an alarm, when a job starts and at power-up. It can only be switched
-  on while all sticks and triggers are at rest and the machine is idle.
+  controller disconnects, when an alarm comes up, when a job starts and at power-up. It can only be
+  switched on while all sticks and triggers are at rest and the machine is idle or in an alarm (so it
+  can be homed from the controller; grblHAL refuses jogging in an alarm). Feed hold/STOP, resume,
+  unlock/reset and the jog step work without it.
 
   Enabled with GAMEPAD_ENABLE in my_machine.h, started from my_plugin_init() in my_plugin.c.
   Optional in my_machine.h: GAMEPAD_STREAM (serial stream instance, default 0), GAMEPAD_BAUD (115200).
@@ -94,7 +97,7 @@
 #include "grbl/stream.h"
 #include "grbl/nvs_buffer.h"
 
-#define GP_VERSION "1.2"
+#define GP_VERSION "1.3"
 
 // ------------------------------------------------------------------------
 // Configuration
@@ -625,10 +628,10 @@ static void on_press (gp_function_t f, sys_state_t state)
             send_state(state, 3);
             break;
 
-        case Fn_JogEnable:  // switches on only while idle with the sticks and triggers at rest
+        case Fn_JogEnable:  // switches on only while idle or in an alarm, with the sticks and triggers at rest
             if(enabled)
                 set_enabled(false, state);
-            else if(state == STATE_IDLE && at_rest())
+            else if((state == STATE_IDLE || (state & STATE_ALARM)) && at_rest())
                 set_enabled(true, state);
             break;
 
@@ -652,17 +655,17 @@ static void on_hold (gp_function_t f, sys_state_t state)
             break;
 
         case Fn_Home:
-            if((idle || (state & STATE_ALARM)) && enqueue("$H"))
+            if(enabled && (idle || (state & STATE_ALARM)) && enqueue("$H"))
                 send_state(state, 3);
             break;
 
         case Fn_ZeroXY:
-            if(idle && enqueue("G10L20P0X0Y0"))
+            if(enabled && idle && enqueue("G10L20P0X0Y0"))
                 send_state(state, 3);
             break;
 
         case Fn_ZeroZ:
-            if(idle && enqueue("G10L20P0Z0"))
+            if(enabled && idle && enqueue("G10L20P0Z0"))
                 send_state(state, 3);
             break;
 
@@ -804,9 +807,12 @@ static void gp_realtime (sys_state_t state)
         set_enabled(false, state);
     }
 
-    // Alarm or job: jog enable off.
-    if(state & (STATE_ALARM|STATE_ESTOP|STATE_CYCLE))
+    // An alarm coming up, e-stop or a job: jog enable off. In an alarm it can be switched on again (to home).
+    static bool was_alarm = false;
+    bool alarm = !!(state & STATE_ALARM);
+    if((alarm && !was_alarm) || (state & (STATE_ESTOP|STATE_CYCLE)))
         set_enabled(false, state);
+    was_alarm = alarm;
 
     if(connected)
         poll_buttons(state, now);
