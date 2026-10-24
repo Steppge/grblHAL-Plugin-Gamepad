@@ -32,6 +32,9 @@
     on-board LED blinks for 60 s, put the controller in pairing mode (PS4: Share + PS until the
     light bar flashes). Hold BOOT for 10 s or $PA,2 from the display to clear the allow list
     (a connected controller is disconnected). Boards without BOOT button pair from the display.
+    Bluepad32 only searches for controllers while the pairing window is open: a search running
+    while an allowed controller reconnects by itself makes the reconnection fail (and could crash
+    Bluepad32 4.2.2).
 
   Protocol (ASCII lines, 115200 baud, checksum = XOR of all characters between '$' and '*')
     ESP32 -> board, every 20 ms:
@@ -138,7 +141,17 @@ static void pairing_start (uint32_t now)
 {
     pairing = true;
     pairing_until = now + PAIR_WINDOW_MS;
+    BP32.enableNewBluetoothConnections(true);
     Console.println("Pairing window open for 60 s");
+}
+
+static void pairing_stop (void)
+{
+    if(pairing) {
+        pairing = false;
+        BP32.enableNewBluetoothConnections(false);
+        Console.println("Pairing window closed");
+    }
 }
 
 // ------------------------------------------------------------------------
@@ -161,7 +174,7 @@ static void on_connected (ControllerPtr ctl)
     }
 
     pad = ctl;
-    pairing = false;
+    pairing_stop();
     Console.printf("Controller connected: %s\n", ctl->getModelName().c_str());
     light_shown = 0xFFFFFFFF;   // set the light bar on the next update
     ctl->playDualRumble(0, 150, 0x60, 0x60);
@@ -292,11 +305,13 @@ static void receive (uint32_t now)
                     jog_enabled = enabled;
                     show_event(event, now);
                 } else if(sscanf(line, "PA,%d", &cmd) == 1) {
-                    pairing = false;
                     if(cmd == 1)
                         pairing_start(now);
-                    else if(cmd == 2)
-                        allow_clear();
+                    else {
+                        pairing_stop();
+                        if(cmd == 2)
+                            allow_clear();
+                    }
                 }
             }
             len = 0;
@@ -329,7 +344,7 @@ static void poll_boot_button (uint32_t now)
     }
 
     if(pairing && (int32_t)(now - pairing_until) >= 0)
-        pairing = false;
+        pairing_stop();
 
     // LED: blinking while pairing, on while a controller is connected
     digitalWrite(LED_PIN, pairing ? ((now / 250) & 1) : (pad != nullptr));
@@ -347,7 +362,7 @@ void setup (void)
     prefs.begin("gamepad", false);
     allow_load();
 
-    BP32.setup(&on_connected, &on_disconnected, true);
+    BP32.setup(&on_connected, &on_disconnected, false);   // no search for new controllers, see pairing_start()
     BP32.enableVirtualDevice(false);    // no touchpad mouse
     BP32.enableBLEService(false);
 
