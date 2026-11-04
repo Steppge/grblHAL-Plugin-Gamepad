@@ -36,7 +36,7 @@
     while an allowed controller reconnects by itself makes the reconnection fail (and could crash
     Bluepad32 4.2.2).
 
-  Protocol (ASCII lines, 115200 baud, checksum = XOR of all characters between '$' and '*')
+  Protocol (ASCII lines, 921600 baud, checksum = XOR of all characters between '$' and '*')
     ESP32 -> board, every 20 ms:
       $GP,<seq>,<conn>,<lx>,<ly>,<rx>,<ry>,<l2>,<r2>,<buttons>,<dpad>,<misc>,<battery>,<pair>*<hh>
         conn     1 = controller connected, 0 = no controller (heartbeat, all values 0)
@@ -70,7 +70,7 @@
 
 #define UART_RX_PIN     16
 #define UART_TX_PIN     17
-#define UART_BAUD       115200
+#define UART_BAUD       921600
 #define SEND_INTERVAL   20      // ms
 #define PAIR_BUTTON_PIN        0
 #define LED_PIN         2

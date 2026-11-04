@@ -113,7 +113,7 @@
 #endif
 #define GP_STREAM           GAMEPAD_STREAM
 #define GP_BAUD             GAMEPAD_BAUD
-#define GP_TIMEOUT_MS     200       // no valid packet for this long = connection lost
+#define GP_TIMEOUT_MS     300       // no valid packet for this long = connection lost (leaves room for WiFi gaps)
 
 #define GP_AXIS_MAX       512       // Bluepad32 stick range -512..511
 #define GP_DEADZONE        50       // +/- around center that counts as neutral (about 10 %)
@@ -132,6 +132,7 @@
 #define GAMEPAD_ESP32     0x02      // packets from the ESP32 arrive
 #define GAMEPAD_CONNECTED 0x04      // a controller is connected to the ESP32
 #define GAMEPAD_PAIRING   0x08      // the pairing window of the ESP32 is open
+#define GAMEPAD_ENABLED   0x10      // jog enable (Options) is on
 
 // Bluepad32 button bits (PS4 names)
 #define GP_BTN_CROSS     0x0001     // BUTTON_A
@@ -768,6 +769,8 @@ uint8_t gamepad_status (uint8_t *pair_left)
         flags |= GAMEPAD_ESP32;
         if(pad.connected)
             flags |= GAMEPAD_CONNECTED;
+        if(pad.connected && enabled)
+            flags |= GAMEPAD_ENABLED;
         if((*pair_left = pad.pair))
             flags |= GAMEPAD_PAIRING;
     }
