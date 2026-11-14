@@ -38,11 +38,25 @@ The plugins only use grblHAL core APIs and are not tied to a driver or MCU.
    #define GAMEPAD_ENABLE          1 // Bluetooth gamepad via ESP32
    #define JOYSTICK_ANALOG_ENABLE  0 // or the analog joystick, enable only one
    //#define GAMEPAD_STREAM        0 // serial stream instance of the UART the ESP32 is connected to
-   //#define GAMEPAD_BAUD     115200
+   //#define GAMEPAD_BAUD     115200 // must match UART_BAUD in esp32/sketch.cpp, see "Baud rate" below
    ```
 5. Build and flash the ESP32 firmware, see [`esp32/README.md`](esp32/README.md), and connect it.
 
 For CMake based builds use the included `CMakeLists.txt` (library `gamepad`), like the official plugins.
+
+### Baud rate
+
+The ESP32 sends with `UART_BAUD` in [`esp32/sketch.cpp`](esp32/sketch.cpp) (921600), `GAMEPAD_BAUD` in
+`my_machine.h` must be the same.
+
+> **ESP32 directly at the BTT Octopus Pro: at most 460800.** USART1 (TFT header, PA9/PA10) shares the
+> APB2 bus with the SD card interface. At 921600 the CPU core of the Octopus froze now and then while
+> the SD card was read, the watchdog restarted it. 460800 ran without fault, 230400 leaves margin. Set
+> `UART_BAUD` in the sketch and `GAMEPAD_BAUD` in `my_machine.h` to the same lower value.
+>
+> With the CrowPanel ESP32-P4 display the ESP32 is connected to the display, not to the controller, and
+> the [Octopus-Bridge](https://github.com/Steppge/grblHAL-Octopus-Bridge) passes the gamepad on to USART1
+> at 230400 (`GAMEPAD_BAUD 230400`). The 921600 of the sketch then only runs between ESP32 and display.
 
 ### Which serial port?
 
@@ -128,7 +142,7 @@ Rumble: short click on acknowledges, long on an alarm, two pulses when a job run
 - `$I` shows `[PLUGIN:Gamepad v1.0 (connected, jog locked)]`, `(no controller)` or `(no ESP32)`.
 - The status report contains `|Pad:connected,enabled,rx,ly,l2,r2` (disable with `GP_DEBUG 0`).
 
-## Protocol (UART, 115200 baud, ASCII lines)
+## Protocol (UART, ASCII lines, baud rate see above)
 
 ```
 ESP32 -> grblHAL, every 20 ms:
