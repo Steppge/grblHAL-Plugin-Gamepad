@@ -48,11 +48,13 @@ from this repository. ESP-IDF does not build in paths with spaces.
 
 ## Update over the P4 display
 
-From sketch 1.4 on (with `partitions_ota.csv`) the receiver can be updated without opening the housing:
+From sketch 1.6 on (with `partitions_ota.csv`; 1.4 and 1.5 give up at the first block, flash them once
+over USB) the receiver can be updated without opening the housing:
 copy the app image `firmware.bin` from `esp32_gamepad_build/.pio/build/esp32dev/` as **`gamepad.bin`** to the
 microSD card of the CrowPanel ESP32-P4 display and switch the display off and on. The display sends the file
 to the receiver while it starts (progress on the screen, about 15 s) and renames it to `gamepad.done`, or
-`gamepad.bad` when it failed. The receiver checks the image before it starts it; a firmware that does not get
+`gamepad.bad` when it failed (the display console shows the reason, `FD,0,<why>`). A block with lost bytes
+is sent again. The receiver checks the image before it starts it; a firmware that does not get
 up is replaced by the previous one at its next start.
 
 ## Wiring
