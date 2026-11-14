@@ -13,6 +13,20 @@ The plugins only use grblHAL core APIs and are not tied to a driver or MCU.
 
 > **Prototype.** Keep a hand on the power or emergency stop switch when trying it on your machine.
 
+### What stops a jog, and how fast
+
+- Stick or trigger released: the jog is cancelled at once (`0x85`), the axis brakes with its acceleration.
+- No valid packet from the ESP32 for 300 ms (cable, receiver, WiFi gap): everything stops. Until then the
+  queued jog segments run on: **up to about 0.5 s of travel after the last packet**, at the top stick
+  speed (35 % of `$110`) e.g. 13 mm with 4500 mm/min.
+- Controller link stalled (battery empty, out of reach; DualShock 4 / DualSense): the receiver reports
+  "no controller" after 200 ms, the jog stops (receiver sketch 1.4 and newer). Xbox controllers only send
+  on changes, for them this check is off and the Bluetooth timeout (some seconds) applies.
+- Jog enable switches off by itself after 60 s without motion, on an alarm, when a job starts and when the
+  controller disconnects.
+- During a job the D-pad changes feed and power overrides (±10 %) **without** jog enable: put the
+  controller down so nothing presses the D-pad while a laser job runs.
+
 ## Contents
 
 | File | |

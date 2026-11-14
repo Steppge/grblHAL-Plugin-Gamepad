@@ -84,7 +84,7 @@
 #include <esp_ota_ops.h>
 #include <esp_rom_crc.h>
 
-#define SKETCH_VERSION  "1.4"
+#define SKETCH_VERSION  "1.5"
 #define STALL_MS        200     // DualShock 4 / DualSense: no new data this long = link stalled
 #define FW_BLOCK        1024    // firmware update: bytes per block, acknowledged one by one
 #define FW_TIMEOUT_MS   3000    // no data for this long: the update is given up
@@ -152,9 +152,15 @@ static bool is_allowed (const uint8_t *addr)
     return false;
 }
 
+// a full list drops its oldest controller, a new one can always be paired
 static void allow_add (const uint8_t *addr)
 {
-    if(!is_allowed(addr) && n_allowed < MAX_ALLOWED) {
+    if(!is_allowed(addr)) {
+        if(n_allowed == MAX_ALLOWED) {
+            memmove(allowed[0], allowed[1], (MAX_ALLOWED - 1) * 6);
+            n_allowed--;
+            Console.println("Allow list full: the oldest controller was removed");
+        }
         memcpy(allowed[n_allowed++], addr, 6);
         allow_save();
     }

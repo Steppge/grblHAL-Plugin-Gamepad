@@ -80,7 +80,8 @@ is not connected.
 
 - Hold **BOOT** for 3 s or tap **Pair controller** on the gamepad screen of the display: the on-board
   LED blinks for 60 s, put the controller in pairing mode (PS4: Share + PS until the light bar flashes).
-  The controller is added to the allow list.
+  The controller is added to the allow list. It holds 8 controllers; a ninth one replaces the oldest
+  (sketch 1.5 and newer).
 - A controller that is already allowed can pair again at any time (e.g. after it was used on a console).
 - Hold **BOOT** for 10 s or hold **Forget all** on the display to clear the allow list.
 - The on-board LED is on while a controller is connected.
