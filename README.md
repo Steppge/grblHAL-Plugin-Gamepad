@@ -61,6 +61,8 @@ The plugins only use grblHAL core APIs and are not tied to a driver or MCU.
    Check the directions once with a small step: stick right must move the tool to the right, stick up away
    from you, L2 up. Otherwise set the `GAMEPAD_INVERT_` of that axis the other way.
 5. Build and flash the ESP32 firmware, see [`esp32/README.md`](esp32/README.md), and connect it.
+   With the CrowPanel ESP32-P4 display and the Octopus-Bridge: all firmwares and their order in
+   [FLASHING.md](https://github.com/Steppge/grblHAL-Plugin-Display/blob/main/docs/FLASHING.md).
 
 For CMake based builds use the included `CMakeLists.txt` (library `gamepad`), like the official plugins.
 
