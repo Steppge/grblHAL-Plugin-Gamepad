@@ -70,7 +70,10 @@
   partitions of partitions_ota.csv:
     board -> ESP32   $FW,<size>,<crc32 hex>*<hh>      then the image in blocks of FW_BLOCK bytes
     ESP32 -> board   $FA,<1 ready / 0 refused>*<hh>   $FK,<bytes written>*<hh> after each block
-                     $FD,<1 done / 0 failed>*<hh>     done: the ESP32 restarts with the new firmware
+                     $FD,1,<resends>*<hh>             done: the ESP32 restarts with the new firmware
+                     $FD,0,<why>*<hh>                 failed
+  Lost bytes: when a block stays incomplete for FW_RESEND_MS, the ESP32 drops it and sends the last
+  $FK,<bytes written> again, the board then sends that block once more (up to FW_RESENDS times in a row).
   The image is checked (CRC32 and the image check of the ESP32) before it becomes the boot partition. A new
   firmware that does not get up is replaced by the old one at the next start (app rollback).
 */
@@ -84,9 +87,11 @@
 #include <esp_ota_ops.h>
 #include <esp_rom_crc.h>
 
-#define SKETCH_VERSION  "1.5"
+#define SKETCH_VERSION  "1.6"
 #define STALL_MS        200     // DualShock 4 / DualSense: no new data this long = link stalled
 #define FW_BLOCK        1024    // firmware update: bytes per block, acknowledged one by one
+#define FW_RESEND_MS    300     // block incomplete this long: bytes lost, ask for the block again
+#define FW_RESENDS      5       // at most this many times in a row
 #define FW_TIMEOUT_MS   3000    // no data for this long: the update is given up
 
 #define UART_RX_PIN     16
@@ -126,6 +131,8 @@ static struct {
     bool on;
     size_t size, got, n;
     uint32_t crc, want, last;
+    uint8_t resends;            // in a row
+    uint16_t resends_all;
     uint8_t buf[FW_BLOCK];
 } fw;
 
@@ -350,7 +357,19 @@ static void fw_fail (const char *why)
     Update.abort();
     fw.on = false;
     Console.printf("Firmware update failed: %s\n", why);
-    send_line("FD,0");
+    char body[48];
+    snprintf(body, sizeof(body), "FD,0,%s", why);
+    for(char *p = body + 5; *p; p++)        // keep the line parsable
+        if(*p == '*' || *p == '$' || *p < ' ')
+            *p = ' ';
+    send_line(body);
+}
+
+static void fw_ack (void)
+{
+    char body[24];
+    snprintf(body, sizeof(body), "FK,%u", (unsigned)fw.got);
+    send_line(body);
 }
 
 static void fw_start (unsigned long size, unsigned long crc)
@@ -392,10 +411,8 @@ static void fw_poll (uint32_t now)
         fw.crc = esp_rom_crc32_le(fw.crc, fw.buf, fw.n);
         fw.got += fw.n;
         fw.n = 0;
-
-        char body[24];
-        snprintf(body, sizeof(body), "FK,%u", (unsigned)fw.got);
-        send_line(body);
+        fw.resends = 0;
+        fw_ack();
 
         if(fw.got == fw.size) {
             if(fw.crc != fw.want) {
@@ -407,15 +424,33 @@ static void fw_poll (uint32_t now)
                 return;
             }
             fw.on = false;
-            send_line("FD,1");
+            char body[24];
+            snprintf(body, sizeof(body), "FD,1,%u", (unsigned)fw.resends_all);
+            send_line(body);
             Serial2.flush();
-            Console.println("Firmware update done, restarting");
+            Console.printf("Firmware update done (%u blocks sent again), restarting\n", (unsigned)fw.resends_all);
             delay(200);
             ESP.restart();
         }
     }
 
-    if(fw.on && now - fw.last > FW_TIMEOUT_MS)
+    // signed: fw.last may be a little newer than now (fw_start() and the reads use their own millis())
+    int32_t quiet = (int32_t)(now - fw.last);
+    if(fw.on && fw.n && quiet > FW_RESEND_MS) {     // block incomplete: bytes lost
+        if(++fw.resends > FW_RESENDS) {
+            fw_fail("bytes lost");
+            return;
+        }
+        fw.resends_all++;
+        Console.printf("Firmware update: block at %u incomplete (%u bytes), sent again\n",
+                       (unsigned)fw.got, (unsigned)fw.n);
+        while(Serial2.available())
+            Serial2.read();
+        fw.n = 0;
+        fw.last = now;
+        fw_ack();                                   // the last block written: the board repeats the next one
+    }
+    if(fw.on && quiet > FW_TIMEOUT_MS)
         fw_fail("timeout");
 }
 
@@ -501,6 +536,9 @@ void setup (void)
 
     Serial2.setRxBufferSize(4096);      // a firmware block arrives while the previous one is written
     Serial2.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
+    // The receive interrupt comes by default only at 120 of the 128 FIFO bytes: 8 bytes = 87 us at 921600
+    // baud, too little against Bluetooth, a firmware update lost bytes. 32 leaves about 1 ms.
+    Serial2.setRxFIFOFull(32);
 
     prefs.begin("gamepad", false);
     allow_load();
