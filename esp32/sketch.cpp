@@ -60,6 +60,19 @@
     short yellow flash every 10 s.
   Rumble
     short click on acknowledges, long strong on an alarm, two medium pulses when a job is finished.
+
+  Stalled link: a DualShock 4 / DualSense sends its state all the time. When nothing new comes for
+  STALL_MS while Bluetooth still reports the controller as connected (battery empty, out of reach), the
+  packets report "no controller" (conn 0), so grblHAL stops jogging at once instead of after the
+  Bluetooth timeout of some seconds. Xbox controllers only send on changes, there the rule is off.
+
+  Firmware update over the UART (from the P4 display, gamepad.bin on its SD card), needs the two OTA
+  partitions of partitions_ota.csv:
+    board -> ESP32   $FW,<size>,<crc32 hex>*<hh>      then the image in blocks of FW_BLOCK bytes
+    ESP32 -> board   $FA,<1 ready / 0 refused>*<hh>   $FK,<bytes written>*<hh> after each block
+                     $FD,<1 done / 0 failed>*<hh>     done: the ESP32 restarts with the new firmware
+  The image is checked (CRC32 and the image check of the ESP32) before it becomes the boot partition. A new
+  firmware that does not get up is replaced by the old one at the next start (app rollback).
 */
 
 #include "sdkconfig.h"
@@ -67,6 +80,14 @@
 #include <Arduino.h>
 #include <Bluepad32.h>
 #include <Preferences.h>
+#include <Update.h>
+#include <esp_ota_ops.h>
+#include <esp_rom_crc.h>
+
+#define SKETCH_VERSION  "1.4"
+#define STALL_MS        200     // DualShock 4 / DualSense: no new data this long = link stalled
+#define FW_BLOCK        1024    // firmware update: bytes per block, acknowledged one by one
+#define FW_TIMEOUT_MS   3000    // no data for this long: the update is given up
 
 #define UART_RX_PIN     16
 #define UART_TX_PIN     17
@@ -96,6 +117,17 @@ static int machine_state = 0;      // 0 idle, 1 run, 2 hold, 3 alarm, 4 jog, 5 h
 static int jog_enabled = 0;
 static uint32_t light_shown = 0xFFFFFFFF;   // last color sent, forces an update when changed
 static uint32_t second_pulse_at = 0;        // job finished: time of the second rumble pulse, 0 = none
+
+static uint32_t last_data = 0;      // millis() of the last new data from the controller
+static bool streaming = false;      // the controller sends all the time (DualShock 4, DualSense)
+static bool stalled = false;
+
+static struct {
+    bool on;
+    size_t size, got, n;
+    uint32_t crc, want, last;
+    uint8_t buf[FW_BLOCK];
+} fw;
 
 // ------------------------------------------------------------------------
 // Allow list (stored in NVS)
@@ -176,7 +208,12 @@ static void on_connected (ControllerPtr ctl)
 
     pad = ctl;
     pairing_stop();
-    Console.printf("Controller connected: %s\n", ctl->getModelName().c_str());
+    String model = ctl->getModelName();
+    streaming = model.indexOf("DualShock") >= 0 || model.indexOf("DualSense") >= 0 || model.indexOf("PS4") >= 0 ||
+                model.indexOf("PS5") >= 0;
+    last_data = millis();
+    stalled = false;
+    Console.printf("Controller connected: %s%s\n", model.c_str(), streaming ? "" : " (no stall check)");
     light_shown = 0xFFFFFFFF;   // set the light bar on the next update
     ctl->playDualRumble(0, 150, 0x60, 0x60);
 }
@@ -206,9 +243,17 @@ static void send_state (void)
     static uint8_t seq = 0;
     char body[96];
 
-    unsigned pair = pairing ? (unsigned)((int32_t)(pairing_until - millis()) + 999) / 1000 : 0;
+    uint32_t now = millis();
+    unsigned pair = pairing ? (unsigned)((int32_t)(pairing_until - now) + 999) / 1000 : 0;
 
-    if(pad && pad->isConnected())
+    // a stalled link counts as no controller: grblHAL stops at once
+    bool live = pad && pad->isConnected() && !(streaming && now - last_data >= STALL_MS);
+    if(pad && live == stalled) {
+        stalled = !live;
+        Console.println(stalled ? "Controller link stalled" : "Controller link back");
+    }
+
+    if(live)
         snprintf(body, sizeof(body), "GP,%u,1,%d,%d,%d,%d,%d,%d,%X,%X,%X,%u,%u", seq++,
                   pad->axisX(), pad->axisY(), pad->axisRX(), pad->axisRY(),
                    pad->brake(), pad->throttle(), pad->buttons(), pad->dpad(), pad->miscButtons(), pad->battery(), pair);
@@ -285,13 +330,96 @@ static void update_rumble (uint32_t now)
     }
 }
 
-// Parse "$ST,<state>,<event>,<enabled>*hh" and "$PA,<cmd>*hh" lines from the board
+static void send_line (const char *body)
+{
+    Serial2.printf("$%s*%02X\n", body, checksum(body));
+}
+
+// ------------------------------------------------------------------------
+// Firmware update over the UART
+// ------------------------------------------------------------------------
+
+static void fw_fail (const char *why)
+{
+    Update.abort();
+    fw.on = false;
+    Console.printf("Firmware update failed: %s\n", why);
+    send_line("FD,0");
+}
+
+static void fw_start (unsigned long size, unsigned long crc)
+{
+    if(fw.on)
+        Update.abort();
+    memset(&fw, 0, sizeof(fw));
+
+    if(size == 0 || !Update.begin(size)) {
+        Console.printf("Firmware update refused: %s\n", size ? Update.errorString() : "size 0");
+        send_line("FA,0");
+        return;
+    }
+    fw.on = true;
+    fw.size = size;
+    fw.want = crc;
+    fw.last = millis();
+    Console.printf("Firmware update: %lu bytes\n", size);
+    send_line("FA,1");
+}
+
+// the image in blocks: each block is written and acknowledged, then the board sends the next one
+static void fw_poll (uint32_t now)
+{
+    while(fw.on && Serial2.available()) {
+        size_t block = min((size_t)FW_BLOCK, fw.size - fw.got);
+        size_t n = Serial2.read(fw.buf + fw.n, block - fw.n);
+        if(n == 0)
+            break;
+        fw.n += n;
+        fw.last = now;
+        if(fw.n < block)
+            continue;
+
+        if(Update.write(fw.buf, fw.n) != fw.n) {
+            fw_fail(Update.errorString());
+            return;
+        }
+        fw.crc = esp_rom_crc32_le(fw.crc, fw.buf, fw.n);
+        fw.got += fw.n;
+        fw.n = 0;
+
+        char body[24];
+        snprintf(body, sizeof(body), "FK,%u", (unsigned)fw.got);
+        send_line(body);
+
+        if(fw.got == fw.size) {
+            if(fw.crc != fw.want) {
+                fw_fail("CRC");
+                return;
+            }
+            if(!Update.end(true)) {         // checks the image, makes it the boot partition
+                fw_fail(Update.errorString());
+                return;
+            }
+            fw.on = false;
+            send_line("FD,1");
+            Serial2.flush();
+            Console.println("Firmware update done, restarting");
+            delay(200);
+            ESP.restart();
+        }
+    }
+
+    if(fw.on && now - fw.last > FW_TIMEOUT_MS)
+        fw_fail("timeout");
+}
+
+// Parse "$ST,<state>,<event>,<enabled>*hh", "$PA,<cmd>*hh" and "$FW,<size>,<crc>*hh" lines from the board
 static void receive (uint32_t now)
 {
     static char line[48];
     static uint8_t len = 0;
 
-    while(Serial2.available()) {
+    while(Serial2.available() && !fw.on) {      // during an update the bytes are the image (fw_poll)
         char c = Serial2.read();
         if(c == '$')
             len = 0;
@@ -299,10 +427,13 @@ static void receive (uint32_t now)
             line[len] = '\0';
             char *star = strchr(line, '*');
             int state, event, enabled, cmd;
+            unsigned long size, crc;
             if(star && len > 3) {
                 *star = '\0';
                 if(strtoul(star + 1, NULL, 16) != checksum(line))
                     ;
+                else if(sscanf(line, "FW,%lu,%lx", &size, &crc) == 2)
+                    fw_start(size, crc);
                 else if(sscanf(line, "ST,%d,%d,%d", &state, &event, &enabled) == 3) {
                     if(state != machine_state || enabled != jog_enabled)
                         Console.printf("ST: state %d, enabled %d\n", state, enabled);
@@ -362,6 +493,7 @@ void setup (void)
     pinMode(PAIR_BUTTON_PIN, INPUT_PULLUP);
     pinMode(LED_PIN, OUTPUT);
 
+    Serial2.setRxBufferSize(4096);      // a firmware block arrives while the previous one is written
     Serial2.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
 
     prefs.begin("gamepad", false);
@@ -371,7 +503,10 @@ void setup (void)
     BP32.enableVirtualDevice(false);    // no touchpad mouse
     BP32.enableBLEService(false);
 
-    Console.printf("esp32_gamepad ready, %u allowed controller(s)\n", n_allowed);
+    // this firmware got up: keep it (without this a new firmware is rolled back at the next start)
+    esp_ota_mark_app_valid_cancel_rollback();
+
+    Console.printf("esp32_gamepad %s ready, %u allowed controller(s)\n", SKETCH_VERSION, n_allowed);
 }
 
 void loop (void)
@@ -380,7 +515,15 @@ void loop (void)
     uint32_t now = millis();
 
     BP32.update();
+    if(pad && pad->hasData())
+        last_data = now;
+
     receive(now);
+    if(fw.on) {             // firmware update: nothing else is sent meanwhile
+        fw_poll(now);
+        vTaskDelay(1);
+        return;
+    }
     poll_boot_button(now);
     update_light(now);
     update_rumble(now);

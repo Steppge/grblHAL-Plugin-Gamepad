@@ -39,7 +39,13 @@ The plugins only use grblHAL core APIs and are not tied to a driver or MCU.
    #define JOYSTICK_ANALOG_ENABLE  0 // or the analog joystick, enable only one
    //#define GAMEPAD_STREAM        0 // serial stream instance of the UART the ESP32 is connected to
    //#define GAMEPAD_BAUD     115200 // must match UART_BAUD in esp32/sketch.cpp, see "Baud rate" below
+   //#define GAMEPAD_INVERT_X      1 // 1 reverses the jog direction of the axis (defaults 1, 1, 0: machine
+   //#define GAMEPAD_INVERT_Y      1 // with +X to the left and +Y to the front, origin at the back right)
+   //#define GAMEPAD_INVERT_Z      0
+   //#define GAMEPAD_DEBUG         1 // |Pad:... in every status report (off by default)
    ```
+   Check the directions once with a small step: stick right must move the tool to the right, stick up away
+   from you, L2 up. Otherwise set the `GAMEPAD_INVERT_` of that axis the other way.
 5. Build and flash the ESP32 firmware, see [`esp32/README.md`](esp32/README.md), and connect it.
 
 For CMake based builds use the included `CMakeLists.txt` (library `gamepad`), like the official plugins.
@@ -140,7 +146,7 @@ Rumble: short click on acknowledges, long on an alarm, two pulses when a job run
 ## Status
 
 - `$I` shows `[PLUGIN:Gamepad v1.0 (connected, jog locked)]`, `(no controller)` or `(no ESP32)`.
-- The status report contains `|Pad:connected,enabled,rx,ly,l2,r2` (disable with `GP_DEBUG 0`).
+- With `GAMEPAD_DEBUG 1` the status report contains `|Pad:connected,enabled,rx,ly,l2,r2`.
 
 ## Protocol (UART, ASCII lines, baud rate see above)
 

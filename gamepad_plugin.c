@@ -22,6 +22,8 @@
   v1.1 - button assignment in settings $450-$457, learn mode for a display.
   v1.2 - pairing a controller and clearing the allow list of the ESP32 from a display.
   v1.3 - home, X0 Y0 and Z0 need the jog enable; it can be switched on in an alarm too (to home).
+  v1.4 - older or repeated packets (UDP over WiFi) are dropped; status report field |Pad: and the jog
+         directions set in my_machine.h (GAMEPAD_DEBUG, GAMEPAD_INVERT_X/Y/Z).
 
   An ESP32 (see esp32/) connects a PS4 controller (DualShock 4; DualSense and Xbox Series X|S
   work the same way) and sends its state every 20 ms over UART to a serial port of the
@@ -75,7 +77,8 @@
   unlock/reset and the jog step work without it.
 
   Enabled with GAMEPAD_ENABLE in my_machine.h, started from my_plugin_init() in my_plugin.c.
-  Optional in my_machine.h: GAMEPAD_STREAM (serial stream instance, default 0), GAMEPAD_BAUD (115200).
+  Optional in my_machine.h: GAMEPAD_STREAM (serial stream instance, default 0), GAMEPAD_BAUD (115200),
+  GAMEPAD_INVERT_X/Y/Z (jog direction, defaults 1/1/0), GAMEPAD_DEBUG (|Pad: in the status report, 0).
   Only grblHAL core APIs are used, so the plugin is not tied to the STM32F4 driver.
 */
 
@@ -97,7 +100,7 @@
 #include "grbl/stream.h"
 #include "grbl/nvs_buffer.h"
 
-#define GP_VERSION "1.3"
+#define GP_VERSION "1.4"
 
 // ------------------------------------------------------------------------
 // Configuration
@@ -168,9 +171,20 @@ __attribute__((weak)) float tft_move_step_next (void)
     return gp_step_val[gp_step];
 }
 
-#define GP_INVERT_X         1       // 1: reverse the jog direction of an axis
-#define GP_INVERT_Y         1
-#define GP_INVERT_Z         0
+// Jog direction per axis, 1 reverses it, can be set in my_machine.h. The defaults suit a machine with +X to
+// the left and +Y to the front (origin at the back right): stick right moves right, stick up moves away.
+#ifndef GAMEPAD_INVERT_X
+#define GAMEPAD_INVERT_X    1
+#endif
+#ifndef GAMEPAD_INVERT_Y
+#define GAMEPAD_INVERT_Y    1
+#endif
+#ifndef GAMEPAD_INVERT_Z
+#define GAMEPAD_INVERT_Z    0
+#endif
+#define GP_INVERT_X         GAMEPAD_INVERT_X
+#define GP_INVERT_Y         GAMEPAD_INVERT_Y
+#define GP_INVERT_Z         GAMEPAD_INVERT_Z
 
 #define JOY_FEED_MIN_XY      5.0f   // mm/min at step 1 (fixed, for touching off)
 #define JOY_FEED_MIN_Z       2.0f   // mm/min at step 1 (fixed, for touching off)
@@ -184,7 +198,11 @@ __attribute__((weak)) float tft_move_step_next (void)
 
 // Debug: append the received values to every status report, e.g.
 //   <Idle|MPos:...|Pad:1,0,-3,12,0,0>   (connected, jog enabled, rx, ly, l2, r2)
-#define GP_DEBUG 1
+// Off by default, senders may not expect the extra field. On with GAMEPAD_DEBUG 1 in my_machine.h.
+#ifndef GAMEPAD_DEBUG
+#define GAMEPAD_DEBUG       0
+#endif
+#define GP_DEBUG            GAMEPAD_DEBUG
 
 // ------------------------------------------------------------------------
 
@@ -248,6 +266,14 @@ static bool parse_packet (char *line)
     n = sscanf(line, "GP,%d,%d,%d,%d,%d,%d,%d,%d,%x,%x,%x,%d,%d", &seq, &conn, &lx, &ly, &rx, &ry, &l2, &r2, &buttons, &dpad, &misc, &bat, &pair);
     if(n != 12 && n != 13)
         return false;
+
+    // Over WiFi the packets come as UDP datagrams, a late one may arrive after a newer one: older and repeated
+    // packets are dropped (seq counts 0..255). After a gap (ESP32 restarted) any number is taken.
+    static uint8_t last_seq;
+    uint8_t ahead = (uint8_t)(seq - last_seq);
+    if(alive && (ahead == 0 || ahead >= 128))
+        return true;    // valid, keeps the link alive, but not newer than what is used
+    last_seq = (uint8_t)seq;
 
     pad.connected = conn == 1;
     pad.lx = lx; pad.ly = ly; pad.rx = rx; pad.ry = ry;

@@ -33,8 +33,27 @@ from this repository. ESP-IDF does not build in paths with spaces.
      `git -C components/arduino fetch --depth 1 origin tag 3.3.12` and `git -C components/arduino checkout 3.3.12`
    - `components/cmd_system/cmd_system.c`: add `#include <driver/gpio.h>` (needed with ESP-IDF 5.5)
 3. Copy `esp32/sketch.cpp` to `esp32_gamepad_build/main/sketch.cpp`.
-4. Build and flash the environment `esp32dev` with PlatformIO from PowerShell or VS Code, not from
-   Git Bash (ESP-IDF refuses to install its tools in an MSYS shell).
+4. For updates over the display (see below): copy `esp32/partitions_ota.csv` to `esp32_gamepad_build/` and
+   set in `sdkconfig.esp32dev` (or, before the first build, in `sdkconfig.defaults`):
+   ```
+   CONFIG_PARTITION_TABLE_CUSTOM=y
+   CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"
+   # CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE is not set
+   CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+   ```
+   `nvs` stays where it was, the allowed controllers are kept.
+5. Build and flash the environment `esp32dev` with PlatformIO from PowerShell or VS Code, not from
+   Git Bash (ESP-IDF refuses to install its tools in an MSYS shell). The first time with the new
+   partition table the whole flash is written (bootloader, partition table, app).
+
+## Update over the P4 display
+
+From sketch 1.4 on (with `partitions_ota.csv`) the receiver can be updated without opening the housing:
+copy the app image `firmware.bin` from `esp32_gamepad_build/.pio/build/esp32dev/` as **`gamepad.bin`** to the
+microSD card of the CrowPanel ESP32-P4 display and switch the display off and on. The display sends the file
+to the receiver while it starts (progress on the screen, about 15 s) and renames it to `gamepad.done`, or
+`gamepad.bad` when it failed. The receiver checks the image before it starts it; a firmware that does not get
+up is replaced by the previous one at its next start.
 
 ## Wiring
 
