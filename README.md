@@ -68,7 +68,7 @@ For CMake based builds use the included `CMakeLists.txt` (library `gamepad`), li
 
 ### Baud rate
 
-The ESP32 sends with `UART_BAUD` in [`esp32/sketch.cpp`](esp32/sketch.cpp) (921600), `GAMEPAD_BAUD` in
+The ESP32 sends with `UART_BAUD` in [`esp32/sketch.cpp`](esp32/sketch.cpp) (460800 since 1.7, 921600 before), `GAMEPAD_BAUD` in
 `my_machine.h` must be the same.
 
 > **ESP32 directly at the BTT Octopus Pro: at most 460800.** USART1 (TFT header, PA9/PA10) shares the
@@ -78,7 +78,7 @@ The ESP32 sends with `UART_BAUD` in [`esp32/sketch.cpp`](esp32/sketch.cpp) (9216
 >
 > With the CrowPanel ESP32-P4 display the ESP32 is connected to the display, not to the controller, and
 > the [Octopus-Bridge](https://github.com/Steppge/grblHAL-Octopus-Bridge) passes the gamepad on to USART1
-> at 230400 (`GAMEPAD_BAUD 230400`). The 921600 of the sketch then only runs between ESP32 and display.
+> at 230400 (`GAMEPAD_BAUD 230400`). The 460800 of the sketch (1.7) then only runs between ESP32 and display.
 
 ### Which serial port?
 

@@ -69,10 +69,12 @@ up is replaced by the previous one at its next start.
 On the D1 Mini ESP32 the four pins are next to each other in the inner pin row on the TXD/RXD side
 (IO17, IO16, GND, VCC).
 
-Baud rate: `UART_BAUD` in `sketch.cpp` (921600) and `GAMEPAD_BAUD` in grblHAL's `my_machine.h` must be
+Baud rate: `UART_BAUD` in `sketch.cpp` (460800 since 1.7, 921600 before) and `GAMEPAD_BAUD` in grblHAL's `my_machine.h` must be
 the same. **Directly at the BTT Octopus Pro at most 460800** (230400 recommended): at 921600 the Octopus
 froze now and then during SD card access, see the main [README](../README.md#baud-rate). With the
-CrowPanel ESP32-P4 display and the Octopus-Bridge the 921600 stays, the bridge passes it on at 230400.
+CrowPanel ESP32-P4 display and the Octopus-Bridge the receiver runs at 460800 to the display (`GAMEPAD_BAUD`
+in its `display_config.h`), the bridge passes it on at 230400. Update a 1.6 receiver from the display card:
+the display offers the update at 460800 and at 921600.
 
 Do not use RX0/TX0, they belong to the USB port of the ESP32. While the ESP32 is connected to the PC
 over USB leave the 5V wire open. A reset pin on the board connector (e.g. RST on the BTT TFT header)

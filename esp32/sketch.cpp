@@ -36,7 +36,7 @@
     while an allowed controller reconnects by itself makes the reconnection fail (and could crash
     Bluepad32 4.2.2).
 
-  Protocol (ASCII lines, 921600 baud, checksum = XOR of all characters between '$' and '*')
+  Protocol (ASCII lines, 460800 baud (921600 before 1.7), checksum = XOR of all characters between '$' and '*')
     ESP32 -> board, every 20 ms:
       $GP,<seq>,<conn>,<lx>,<ly>,<rx>,<ry>,<l2>,<r2>,<buttons>,<dpad>,<misc>,<battery>,<pair>*<hh>
         conn     1 = controller connected, 0 = no controller (heartbeat, all values 0)
@@ -86,8 +86,9 @@
 #include <Update.h>
 #include <esp_ota_ops.h>
 #include <esp_rom_crc.h>
+#include <btstack.h>            // page scan interval (gap_set_page_scan_activity)
 
-#define SKETCH_VERSION  "1.6"
+#define SKETCH_VERSION  "1.8"
 #define STALL_MS        200     // DualShock 4 / DualSense: no new data this long = link stalled
 #define FW_BLOCK        1024    // firmware update: bytes per block, acknowledged one by one
 #define FW_RESEND_MS    300     // block incomplete this long: bytes lost, ask for the block again
@@ -96,7 +97,7 @@
 
 #define UART_RX_PIN     16
 #define UART_TX_PIN     17
-#define UART_BAUD       921600
+#define UART_BAUD       460800  // 1.7: halved (display P4: GAMEPAD_BAUD), before 921600
 #define SEND_INTERVAL   20      // ms
 #define PAIR_BUTTON_PIN        0
 #define LED_PIN         2
@@ -536,7 +537,7 @@ void setup (void)
 
     Serial2.setRxBufferSize(4096);      // a firmware block arrives while the previous one is written
     Serial2.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
-    // The receive interrupt comes by default only at 120 of the 128 FIFO bytes: 8 bytes = 87 us at 921600
+    // The receive interrupt comes by default only at 120 of the 128 FIFO bytes: 8 bytes = 87 us at 921600 (174 us at 460800)
     // baud, too little against Bluetooth, a firmware update lost bytes. 32 leaves about 1 ms.
     Serial2.setRxFIFOFull(32);
 
@@ -553,12 +554,41 @@ void setup (void)
     Console.printf("esp32_gamepad %s ready, %u allowed controller(s)\n", SKETCH_VERSION, n_allowed);
 }
 
+// Page scan (the receiver listens for a controller that reconnects): every 2.56 s instead of the 1.28 s
+// default, the maximum of the standard. Half as many radio current peaks while no controller is connected,
+// a controller switched on may take up to about 1.3 s longer to connect; a connection is not affected.
+// Set in the BTstack thread once its HCI is up, asked again every second until then.
+#define PAGE_SCAN_INTERVAL  0x1000  // slots of 0.625 ms: 2.56 s
+#define PAGE_SCAN_WINDOW    0x12    // 11.25 ms, the default
+
+static volatile bool page_scan_set = false;
+
+static void page_scan_apply (void *ctx)
+{
+    if(hci_get_state() == HCI_STATE_WORKING) {
+        gap_set_page_scan_activity(PAGE_SCAN_INTERVAL, PAGE_SCAN_WINDOW);
+        page_scan_set = true;
+    }
+}
+
+static void page_scan_poll (uint32_t now)
+{
+    static btstack_context_callback_registration_t reg = { .callback = page_scan_apply };
+    static uint32_t last = 0;
+
+    if(page_scan_set || now - last < 1000)
+        return;
+    last = now;
+    btstack_run_loop_execute_on_main_thread(&reg);
+}
+
 void loop (void)
 {
     static uint32_t last_send = 0;
     uint32_t now = millis();
 
     BP32.update();
+    page_scan_poll(now);
     if(pad && pad->hasData())
         last_data = now;
 
