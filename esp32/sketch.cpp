@@ -53,10 +53,23 @@
     board -> ESP32, from the display:
       $PA,<cmd>*<hh>
         cmd      1 = open the pairing window, 0 = close it, 2 = clear the allow list
+      $PW,<on>*<hh>       (1.9, the P4 display sends it every 2 s)
+        on       0 = radio off: the controller is disconnected (it switches itself off), Bluetooth is
+                 powered down and the CPU runs at 80 MHz, only the UART stays; 1 = on again (default)
+    ESP32 -> board, Bluetooth log (1.11, for the diagnosis of slow connections; the P4 display shows them
+    with "gplog on", the gamepad plugin ignores them):
+      $LG,<ms>,<event>[,<values>]*<hh>
+        req,<addr>          a controller asks for a connection     conn,<status>,<addr>  connection complete
+        keyreq / pin / ssp  link key, PIN or confirmation asked    auth,<status>  enc,<status>,<on>
+        disc,<status>,<reason>                                     state,<n>  BTstack state
+        pad,<model> / rejected,<addr> / gone                       Bluepad32: controller up, refused, away
+      status / reason: HCI error codes (0 = success, 0x04 page timeout, 0x05 auth failure, 0x08 supervision
+      timeout, 0x13 remote user, 0x16 local host)
 
   Light bar
-    idle locked blue, idle or jog with jog enable red, job green, hold orange, homing violet,
-    alarm red blinking (red / violet with jog enable: home works). Controller battery below 20 %:
+    idle locked blue, idle or jog with jog enable violet, job green, hold orange, homing red,
+    alarm violet blinking (violet / red with jog enable: home works). 1.10: red and violet swapped.
+    Controller battery below 20 %:
     short yellow flash every 10 s.
   Rumble
     short click on acknowledges, long strong on an alarm, two medium pulses when a job is finished.
@@ -86,9 +99,10 @@
 #include <Update.h>
 #include <esp_ota_ops.h>
 #include <esp_rom_crc.h>
-#include <btstack.h>            // page scan interval (gap_set_page_scan_activity)
+#include <btstack.h>            // page scan interval (gap_set_page_scan_activity), HCI events for $LG
+#include <stdarg.h>
 
-#define SKETCH_VERSION  "1.8"
+#define SKETCH_VERSION  "1.12"
 #define STALL_MS        200     // DualShock 4 / DualSense: no new data this long = link stalled
 #define FW_BLOCK        1024    // firmware update: bytes per block, acknowledged one by one
 #define FW_RESEND_MS    300     // block incomplete this long: bytes lost, ask for the block again
@@ -202,6 +216,83 @@ static void pairing_stop (void)
 }
 
 // ------------------------------------------------------------------------
+// Bluetooth log: $LG lines, from the BTstack thread over a queue to loop() (the only writer of the UART)
+// ------------------------------------------------------------------------
+
+#define LG_LEN  64
+
+static QueueHandle_t lg_queue;
+static btstack_packet_callback_registration_t lg_reg;
+
+static void lg_push (const char *fmt, ...)
+{
+    char b[LG_LEN];
+    int n = snprintf(b, sizeof(b), "LG,%lu,", (unsigned long)millis());
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(b + n, sizeof(b) - n, fmt, ap);
+    va_end(ap);
+    if(lg_queue)
+        xQueueSend(lg_queue, b, 0);
+}
+
+static void lg_handler (uint8_t type, uint16_t channel, uint8_t *p, uint16_t size)
+{
+    bd_addr_t a;
+
+    if(type != HCI_EVENT_PACKET)
+        return;
+
+    switch(hci_event_packet_get_type(p)) {
+        case BTSTACK_EVENT_STATE:
+            lg_push("state,%u", btstack_event_state_get_state(p));
+            break;
+        case HCI_EVENT_CONNECTION_REQUEST:
+            hci_event_connection_request_get_bd_addr(p, a);
+            lg_push("req,%s", bd_addr_to_str(a));
+            break;
+        case HCI_EVENT_CONNECTION_COMPLETE:
+            hci_event_connection_complete_get_bd_addr(p, a);
+            lg_push("conn,%02X,%s", hci_event_connection_complete_get_status(p), bd_addr_to_str(a));
+            break;
+        case HCI_EVENT_LINK_KEY_REQUEST:
+            lg_push("keyreq");
+            break;
+        case HCI_EVENT_PIN_CODE_REQUEST:
+            lg_push("pin");
+            break;
+        case HCI_EVENT_USER_CONFIRMATION_REQUEST:
+            lg_push("ssp");
+            break;
+        case HCI_EVENT_AUTHENTICATION_COMPLETE:
+            lg_push("auth,%02X", hci_event_authentication_complete_get_status(p));
+            break;
+        case HCI_EVENT_ENCRYPTION_CHANGE:
+            lg_push("enc,%02X,%u", hci_event_encryption_change_get_status(p), hci_event_encryption_change_get_encryption_enabled(p));
+            break;
+        case HCI_EVENT_DISCONNECTION_COMPLETE:
+            lg_push("disc,%02X,%02X", hci_event_disconnection_complete_get_status(p), hci_event_disconnection_complete_get_reason(p));
+            break;
+        default:
+            break;
+    }
+}
+
+static void lg_register (void *ctx)
+{
+    lg_reg.callback = &lg_handler;
+    hci_add_event_handler(&lg_reg);
+}
+
+static void lg_begin (void)
+{
+    static btstack_context_callback_registration_t reg = { .callback = lg_register };
+
+    lg_queue = xQueueCreate(16, LG_LEN);
+    btstack_run_loop_execute_on_main_thread(&reg);
+}
+
+// ------------------------------------------------------------------------
 // Bluepad32 callbacks
 // ------------------------------------------------------------------------
 
@@ -216,6 +307,7 @@ static void on_connected (ControllerPtr ctl)
 
     if(!is_allowed(addr) || (pad != nullptr && pad != ctl)) {
         Console.printf("Controller rejected: %02X:%02X:%02X:%02X:%02X:%02X\n", addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+        lg_push("rejected,%02X:%02X:%02X:%02X:%02X:%02X", addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
         ctl->disconnect();
         return;
     }
@@ -228,6 +320,7 @@ static void on_connected (ControllerPtr ctl)
     last_data = millis();
     stalled = false;
     Console.printf("Controller connected: %s%s\n", model.c_str(), streaming ? "" : " (no stall check)");
+    lg_push("pad,%s", model.c_str());
     light_shown = 0xFFFFFFFF;   // set the light bar on the next update
     ctl->playDualRumble(0, 150, 0x60, 0x60);
 }
@@ -237,6 +330,7 @@ static void on_disconnected (ControllerPtr ctl)
     if(ctl == pad) {
         pad = nullptr;
         Console.println("Controller disconnected");
+        lg_push("gone");
     }
 }
 
@@ -283,12 +377,12 @@ static void send_state (void)
 static uint32_t state_color (uint32_t now)
 {
     switch(machine_state) {
-        case 0:  return jog_enabled ? RGB(100, 0, 0) : RGB(0, 0, 60);  // idle: red enabled, blue locked
+        case 0:  return jog_enabled ? RGB(50, 0, 60) : RGB(0, 0, 60);  // idle: violet enabled, blue locked
         case 1:  return RGB(0, 70, 0);                                 // job: green
         case 2:  return RGB(100, 40, 0);                               // hold: orange
-        case 3:  return (now / BLINK_MS) & 1 ? RGB(100, 0, 0) : (jog_enabled ? RGB(50, 0, 60) : 0);  // alarm: red blinking, red/violet with enable
-        case 4:  return RGB(100, 0, 0);                                // jog: red (enabled)
-        case 5:  return RGB(50, 0, 60);                                // homing: violet
+        case 3:  return (now / BLINK_MS) & 1 ? RGB(50, 0, 60) : (jog_enabled ? RGB(100, 0, 0) : 0);  // alarm: violet blinking, violet/red with enable
+        case 4:  return RGB(50, 0, 60);                                // jog: violet (enabled)
+        case 5:  return RGB(100, 0, 0);                                // homing: red
         default: return RGB(30, 30, 30);                               // other: white
     }
 }
@@ -455,7 +549,10 @@ static void fw_poll (uint32_t now)
         fw_fail("timeout");
 }
 
-// Parse "$ST,<state>,<event>,<enabled>*hh", "$PA,<cmd>*hh" and "$FW,<size>,<crc>*hh" lines from the board
+static bool radio_on = true;        // $PW, see radio_set()
+static void radio_set (bool on);
+
+// Parse "$ST,<state>,<event>,<enabled>*hh", "$PA,<cmd>*hh", "$PW,<on>*hh" and "$FW,<size>,<crc>*hh" lines from the board
 static void receive (uint32_t now)
 {
     static char line[48];
@@ -482,8 +579,10 @@ static void receive (uint32_t now)
                     machine_state = state;
                     jog_enabled = enabled;
                     show_event(event, now);
-                } else if(sscanf(line, "PA,%d", &cmd) == 1) {
-                    if(cmd == 1)
+                } else if(sscanf(line, "PW,%d", &cmd) == 1)
+                    radio_set(cmd != 0);
+                else if(sscanf(line, "PA,%d", &cmd) == 1) {
+                    if(cmd == 1 && radio_on)
                         pairing_start(now);
                     else {
                         pairing_stop();
@@ -515,7 +614,7 @@ static void poll_boot_button (uint32_t now)
             handled = true;
         }
     } else {
-        if(down_since && !handled && now - down_since >= PAIR_HOLD_MS)
+        if(down_since && !handled && now - down_since >= PAIR_HOLD_MS && radio_on)
             pairing_start(now);
         down_since = 0;
         handled = false;
@@ -547,6 +646,7 @@ void setup (void)
     BP32.setup(&on_connected, &on_disconnected, false);   // no search for new controllers, see pairing_start()
     BP32.enableVirtualDevice(false);    // no touchpad mouse
     BP32.enableBLEService(false);
+    lg_begin();
 
     // this firmware got up: keep it (without this a new firmware is rolled back at the next start)
     esp_ota_mark_app_valid_cancel_rollback();
@@ -554,19 +654,50 @@ void setup (void)
     Console.printf("esp32_gamepad %s ready, %u allowed controller(s)\n", SKETCH_VERSION, n_allowed);
 }
 
-// Page scan (the receiver listens for a controller that reconnects): every 2.56 s instead of the 1.28 s
-// default, the maximum of the standard. Half as many radio current peaks while no controller is connected,
-// a controller switched on may take up to about 1.3 s longer to connect; a connection is not affected.
+// Page scan (the receiver listens for a controller that reconnects): every 1.28 s (the default), interlaced
+// (1.12): in each window it listens on both frequency trains a paging controller goes through one after
+// the other, so a controller that pages on the other train is heard at once instead of some seconds later
+// (1.11 log: slow connections lost their time before the request reached the receiver, the connection
+// itself took 0.7 s). 1.8 to 1.11 scanned every 2.56 s, standard mode.
 // Set in the BTstack thread once its HCI is up, asked again every second until then.
-#define PAGE_SCAN_INTERVAL  0x1000  // slots of 0.625 ms: 2.56 s
+#define PAGE_SCAN_INTERVAL  0x0800  // slots of 0.625 ms: 1.28 s
 #define PAGE_SCAN_WINDOW    0x12    // 11.25 ms, the default
 
 static volatile bool page_scan_set = false;
+
+// $PW: Bluetooth radio on/off (P4 display in the PC-Deck mode), power control in the BTstack thread
+static volatile bool radio_want = true;
+
+static void radio_apply (void *ctx)
+{
+    hci_power_control(radio_want ? HCI_POWER_ON : HCI_POWER_OFF);
+}
+
+static void radio_set (bool on)
+{
+    static btstack_context_callback_registration_t reg = { .callback = radio_apply };
+
+    if(on == radio_on)
+        return;
+    radio_on = on;
+    if(!on) {
+        pairing_stop();
+        if(pad)
+            pad->disconnect();
+    }
+    radio_want = on;
+    btstack_run_loop_execute_on_main_thread(&reg);
+    if(on)
+        page_scan_set = false;      // set the page scan again once the HCI is up
+    setCpuFrequencyMhz(on ? 240 : 80);
+    Console.printf("Bluetooth %s\n", on ? "on" : "off (PW,0)");
+}
 
 static void page_scan_apply (void *ctx)
 {
     if(hci_get_state() == HCI_STATE_WORKING) {
         gap_set_page_scan_activity(PAGE_SCAN_INTERVAL, PAGE_SCAN_WINDOW);
+        gap_set_page_scan_type(PAGE_SCAN_MODE_INTERLACED);
         page_scan_set = true;
     }
 }
@@ -576,7 +707,7 @@ static void page_scan_poll (uint32_t now)
     static btstack_context_callback_registration_t reg = { .callback = page_scan_apply };
     static uint32_t last = 0;
 
-    if(page_scan_set || now - last < 1000)
+    if(page_scan_set || !radio_on || now - last < 1000)
         return;
     last = now;
     btstack_run_loop_execute_on_main_thread(&reg);
@@ -598,6 +729,10 @@ void loop (void)
         vTaskDelay(1);
         return;
     }
+    char lg[LG_LEN];
+    while(xQueueReceive(lg_queue, lg, 0) == pdTRUE)
+        send_line(lg);
+
     poll_boot_button(now);
     update_light(now);
     update_rumble(now);

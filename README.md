@@ -107,7 +107,7 @@ While the ESP32 is connected to the PC over USB leave the 5V wire open.
 | Left stick up/down | Y (10 speed steps) |
 | Right stick left/right | X (10 speed steps) |
 | L2 / R2 (analog) | Z up / Z down (both pressed: Z stops) |
-| Options (`$457`) | Jog enable on/off (light bar red / blue) |
+| Options (`$457`) | Jog enable on/off (light bar violet / blue) |
 | Circle (`$450`) | Tap: feed hold. After the hold: hold = STOP (abort the job) |
 | Cross (`$451`) | Tap: resume (cycle start) |
 | Triangle (`$452`) | Hold: home (needs jog enable) |
@@ -137,11 +137,11 @@ otherwise the plugin uses its own.
 | State | Light bar |
 |---|---|
 | Idle, jog locked | blue |
-| Idle or jog, jog enabled | red |
+| Idle or jog, jog enabled | violet |
 | Job running | green |
 | Hold | orange |
-| Homing | violet |
-| Alarm | red blinking, red / violet with jog enable (home works) |
+| Homing | red |
+| Alarm | violet blinking, violet / red with jog enable (home works) |
 | Controller battery below 20 % | short yellow flash every 10 s |
 
 Rumble: short click on acknowledges, long on an alarm, two pulses when a job running at least 10 s has finished.
